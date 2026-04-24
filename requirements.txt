@@ -1,0 +1,11 @@
+# This project is a Node.js application. 
+# The primary dependency management is done via package.json.
+# Below are the main dependencies for reference:
+
+body-parser
+cors
+express
+ip
+markdown-it
+multer
+sqlite3

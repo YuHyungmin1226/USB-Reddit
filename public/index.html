@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USB Reddit</title>
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+
+<body>
+
+    <div class="container">
+        <header>
+            <h1 class="logo" onclick="app.goHome()">USB Reddit</h1>
+            <div id="user-info">
+                <span id="current-user">Guest</span>
+                <button onclick="app.promptNickname()" class="primary-btn"
+                    style="padding: 5px 10px; font-size: 0.8rem;">Set Nickname</button>
+                <button onclick="app.exportAllToMd()" class="primary-btn"
+                    style="padding: 5px 10px; font-size: 0.8rem; background-color: #4CAF50;">Export MD</button>
+            </div>
+        </header>
+
+        <nav class="subreddit-nav" id="sub-nav">
+            <!-- Subreddits will be injected here -->
+            <a href="#" class="sub-link active" onclick="app.loadPosts('all')">All</a>
+        </nav>
+
+        <!-- Create Post Form -->
+        <div id="create-post-form" class="create-post-form">
+            <h3>Create Post in r/<span id="create-post-sub-name"></span></h3>
+            <input type="text" id="post-title" placeholder="Title">
+            <textarea id="post-content" rows="6"
+                placeholder="Content (Markdown supported: **bold**, *italic*)"></textarea>
+            <div style="margin-bottom: 12px; color: #ccc; font-size: 0.9rem;">
+                <label for="post-file" style="display:block; margin-bottom:5px;">Attach Image/Video (Optional):</label>
+                <input type="file" id="post-file" accept="image/*,video/*" style="padding: 5px;">
+            </div>
+            <input type="text" id="post-author" placeholder="Nickname">
+            <input type="password" id="post-password" placeholder="Simple Password (for editing/deleting)">
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button onclick="app.toggleCreateForm()"
+                    style="background: transparent; color: #888; border: none; cursor: pointer;">Cancel</button>
+                <button class="primary-btn" onclick="app.submitPost()">Post</button>
+            </div>
+        </div>
+
+        <!-- Posts List View -->
+        <main id="post-list" class="post-list">
+            <!-- Posts will be injected here -->
+            <div style="text-align: center; color: #666; padding: 20px;">Loading...</div>
+        </main>
+
+        <!-- Single Post View -->
+        <div id="single-post-view" class="single-post-view">
+            <button onclick="app.goHome()"
+                style="background: transparent; border: none; color: #ff4500; cursor: pointer; margin-bottom: 10px;">←
+                Back</button>
+            <div id="single-post-content"></div>
+
+            <div class="comment-section">
+                <h4>Comments</h4>
+                <div id="comment-form" style="margin-bottom: 20px;">
+                    <textarea id="comment-content" rows="3" placeholder="Write a comment..."
+                        style="width: 100%;"></textarea>
+                    <input type="text" id="comment-author" placeholder="Nickname"
+                        style="width: 200px; display: inline-block;">
+                    <button class="primary-btn" onclick="app.submitComment()">Comment</button>
+                </div>
+                <div id="comments-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="fab" onclick="app.toggleCreateForm()">+</div>
+
+    <script src="app.js"></script>
+</body>
+
+</html>

@@ -1,0 +1,310 @@
+/* 
+   Refined Minimalist Theme (Matte Black)
+   Focus: Stability, Readability, Performance
+*/
+
+:root {
+    /* Color Palette - Strict Grey Scale */
+    --bg-app: #121212;
+    /* Deep Matte Black */
+    --bg-surface: #1e1e1e;
+    /* Lighter Grey for cards */
+    --bg-surface-hover: #252525;
+
+    --border-color: #333333;
+    /* Thin crisp borders */
+
+    --text-primary: #e0e0e0;
+    /* High contrast text */
+    --text-secondary: #a0a0a0;
+    /* Muted text */
+
+    --accent-color: #ff4500;
+    /* Reddit Orange (Classic) */
+    --accent-hover: #e03d00;
+}
+
+/* Global Styles */
+body {
+    font-family: 'Inter', sans-serif;
+    /* Clean, standard font */
+    background: var(--bg-app);
+    color: var(--text-primary);
+    margin: 0;
+    padding: 0;
+    overflow-y: scroll;
+    /* Force scrollbar to prevent layout jump */
+    -webkit-font-smoothing: antialiased;
+    /* Crisp text rendering */
+}
+
+/* Layout Container */
+.container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+/* Header */
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 0;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 30px;
+}
+
+h1.logo {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin: 0;
+    cursor: pointer;
+    letter-spacing: -0.5px;
+}
+
+h1.logo:hover {
+    color: var(--accent-color);
+}
+
+#user-info {
+    font-size: 0.9rem;
+    color: var(--text-secondary);
+}
+
+#current-user {
+    font-weight: 600;
+    color: var(--text-primary);
+    margin-right: 10px;
+}
+
+/* Buttons (Tactile feel, no glows) */
+.primary-btn {
+    background: var(--text-primary);
+    color: var(--bg-app);
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: transform 0.1s ease, background 0.2s;
+}
+
+.primary-btn:hover {
+    background: #ffffff;
+}
+
+.primary-btn:active {
+    transform: scale(0.96);
+    /* Tactile press effect */
+}
+
+/* Navigation */
+.subreddit-nav {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-color) var(--bg-app);
+}
+
+.sub-link {
+    white-space: nowrap;
+    padding: 6px 12px;
+    background: transparent;
+    border: 1px solid var(--border-color);
+    border-radius: 20px;
+    text-decoration: none;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 500;
+    transition: all 0.2s ease;
+}
+
+.sub-link:hover {
+    border-color: var(--text-primary);
+    color: var(--text-primary);
+    background: var(--bg-surface);
+}
+
+.sub-link.active {
+    background: var(--text-primary);
+    color: var(--bg-app);
+    border-color: var(--text-primary);
+}
+
+/* Post Content Media */
+/* Post Content Media */
+#single-post-content img,
+#single-post-content video {
+    max-width: 100%;
+    height: auto;
+    border-radius: 4px;
+    margin-top: 10px;
+    display: block;
+}
+
+/* Responsive YouTube Embed */
+.video-container {
+    position: relative;
+    padding-bottom: 56.25%;
+    /* 16:9 */
+    height: 0;
+    overflow: hidden;
+    margin-top: 10px;
+    border-radius: 4px;
+}
+
+.video-container iframe {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+}
+
+/* Post Cards (Flat, clean, defined) */
+.post-list {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    /* Minimal gap for list feel */
+    background: var(--border-color);
+    /* Lines between posts */
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.post-card {
+    background: var(--bg-app);
+    padding: 15px 20px;
+    transition: background 0.1s ease;
+    cursor: pointer;
+}
+
+.post-card:hover {
+    background: var(--bg-surface);
+}
+
+.post-meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+}
+
+.subreddit-tag {
+    color: var(--text-primary);
+    font-weight: 600;
+    margin-right: 5px;
+}
+
+.post-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    margin: 0 0 8px 0;
+    color: var(--text-primary);
+    line-height: 1.4;
+}
+
+.post-actions {
+    display: flex;
+    gap: 15px;
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    font-weight: 500;
+}
+
+.vote-btn:hover {
+    color: var(--accent-color);
+}
+
+/* Create Post Form */
+.create-post-form {
+    display: none;
+    background: var(--bg-surface);
+    padding: 20px;
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    margin-bottom: 20px;
+}
+
+input,
+textarea {
+    width: 100%;
+    background: var(--bg-app);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 12px;
+    margin-bottom: 12px;
+    border-radius: 4px;
+    box-sizing: border-box;
+    font-family: inherit;
+    font-size: 0.95rem;
+}
+
+input:focus,
+textarea:focus {
+    outline: none;
+    border-color: var(--text-secondary);
+}
+
+/* Single Post View */
+.single-post-view {
+    display: none;
+}
+
+.single-post-view h1 {
+    font-size: 1.8rem;
+    line-height: 1.3;
+    margin-bottom: 20px;
+}
+
+.comment-section {
+    margin-top: 40px;
+    border-top: 1px solid var(--border-color);
+    padding-top: 20px;
+}
+
+.comment {
+    border-left: 2px solid var(--border-color);
+    padding-left: 15px;
+    margin-top: 20px;
+}
+
+.comment .meta {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 6px;
+}
+
+.fab {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    width: 56px;
+    height: 56px;
+    background: var(--text-primary);
+    border-radius: 50%;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    color: var(--bg-app);
+    font-size: 1.8rem;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    transition: transform 0.2s, background 0.2s;
+}
+
+.fab:hover {
+    background: #ffffff;
+    transform: scale(1.05);
+}
+
+.fab:active {
+    transform: scale(0.95);
+}
