@@ -270,8 +270,47 @@ app.delete('/api/posts/:id', (req, res) => {
     });
 });
 
+// 7.1 Update post (with password check)
+app.put('/api/posts/:id', (req, res) => {
+    const postId = req.params.id;
+    const { title, content, password } = req.body;
+
+    if (!password) {
+        return res.status(400).json({ error: "Password is required" });
+    }
+
+    db.get("SELECT password FROM posts WHERE id = ?", [postId], (err, row) => {
+        if (err || !row) return res.status(404).json({ error: "Post not found" });
+
+        if (row.password !== password) {
+            return res.status(403).json({ error: "Incorrect password" });
+        }
+
+        db.run("UPDATE posts SET title = ?, content = ? WHERE id = ?", [title, content, postId], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+            res.json({ message: "Updated successfully" });
+        });
+    });
+});
+
+// 7.2 Admin Login
+app.post('/api/login', (req, res) => {
+    const { username, password } = req.body;
+    if (username === 'admin' && password === 'admin123') {
+        res.json({ success: true, message: "Logged in as admin" });
+    } else {
+        res.status(401).json({ success: false, error: "Invalid credentials" });
+    }
+});
+
 // 8. Export all posts to Markdown files
 app.post('/api/export', (req, res) => {
+    // Basic protection (optional but good practice)
+    const { adminPassword } = req.body;
+    if (adminPassword !== 'admin123') {
+        return res.status(403).json({ error: "Admin access required" });
+    }
+
     const exportDir = path.join(__dirname, '../exports');
 
     if (!fs.existsSync(exportDir)) {

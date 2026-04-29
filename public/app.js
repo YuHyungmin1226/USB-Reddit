@@ -4,8 +4,11 @@ const app = {
     currentSub: 'general',
     currentPostId: null,
     user: 'Guest',
+    isAdmin: false,
 
     init: async () => {
+        app.isAdmin = localStorage.getItem('isAdmin') === 'true';
+        app.updateAdminUI();
         await app.loadSubreddits();
         app.loadPosts();
     },
@@ -25,6 +28,16 @@ const app = {
         if (form.style.display === 'block') {
             form.style.display = 'none';
         } else {
+            // Reset form if it was in edit mode
+            document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
+            document.getElementById('edit-post-id').value = '';
+            document.getElementById('post-title').value = '';
+            document.getElementById('post-content').value = '';
+            document.getElementById('post-author').disabled = false;
+            document.getElementById('post-password').value = '';
+            document.getElementById('attachment-field').style.display = 'block';
+            document.getElementById('post-submit-btn').innerText = "Post";
+
             form.style.display = 'block';
             document.getElementById('create-post-sub-name').innerText = app.currentSub;
             // Auto fill author if known
@@ -39,6 +52,70 @@ const app = {
         if (name) {
             app.user = name;
             document.getElementById('current-user').innerText = name;
+        }
+    },
+
+    promptAdminLogin: () => {
+        document.getElementById('login-modal').style.display = 'flex';
+        document.getElementById('admin-username').focus();
+    },
+
+    closeLoginModal: () => {
+        document.getElementById('login-modal').style.display = 'none';
+        document.getElementById('admin-username').value = '';
+        document.getElementById('admin-password').value = '';
+    },
+
+    submitAdminLogin: async () => {
+        const username = document.getElementById('admin-username').value;
+        const password = document.getElementById('admin-password').value;
+
+        if (!username || !password) return alert("Please enter both username and password.");
+
+        try {
+            const res = await fetch(`${API_URL}/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const json = await res.json();
+            if (json.success) {
+                app.isAdmin = true;
+                localStorage.setItem('isAdmin', 'true');
+                app.updateAdminUI();
+                app.closeLoginModal();
+                alert("Logged in as admin.");
+            } else {
+                alert("Login failed: " + (json.error || "Invalid credentials"));
+            }
+        } catch (err) {
+            alert("Error during login");
+        }
+    },
+
+    logout: () => {
+        app.isAdmin = false;
+        localStorage.removeItem('isAdmin');
+        app.updateAdminUI();
+        alert("Logged out.");
+    },
+
+    updateAdminUI: () => {
+        const exportBtn = document.getElementById('export-btn');
+        const loginBtn = document.getElementById('login-btn');
+        const logoutBtn = document.getElementById('logout-btn');
+        const adminBadge = document.getElementById('admin-badge');
+
+        if (app.isAdmin) {
+            exportBtn.style.display = 'inline-block';
+            logoutBtn.style.display = 'inline-block';
+            loginBtn.style.display = 'none';
+            adminBadge.style.display = 'inline-block';
+        } else {
+            exportBtn.style.display = 'none';
+            logoutBtn.style.display = 'none';
+            loginBtn.style.display = 'inline-block';
+            adminBadge.style.display = 'none';
         }
     },
 
@@ -220,41 +297,64 @@ const app = {
     },
 
     submitPost: async () => {
+        const editId = document.getElementById('edit-post-id').value;
         const title = document.getElementById('post-title').value;
         const content = document.getElementById('post-content').value;
         const author = document.getElementById('post-author').value || 'Anonymous';
         const password = document.getElementById('post-password').value;
-        const fileInput = document.getElementById('post-file');
+        
+        if (!password) return alert("Password is required for post management.");
 
-        if (!password) return alert("Password is required for post management (deletion).");
+        if (editId) {
+            // Update Existing Post
+            try {
+                const res = await fetch(`${API_URL}/posts/${editId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ title, content, password })
+                });
 
-        const formData = new FormData();
-        formData.append('title', title);
-        formData.append('content', content);
-        formData.append('author', author);
-        formData.append('password', password);
-
-        if (fileInput.files.length > 0) {
-            formData.append('attachment', fileInput.files[0]);
-        }
-
-        try {
-            // Note: Content-Type header is not set manually for FormData; browser sets it with boundary
-            const res = await fetch(`${API_URL}/r/${app.currentSub}`, {
-                method: 'POST',
-                body: formData
-            });
-
-            if (res.ok) {
-                document.getElementById('post-title').value = '';
-                document.getElementById('post-content').value = '';
-                app.toggleCreateForm();
-                app.loadPosts();
-            } else {
-                alert("Failed to post.");
+                if (res.ok) {
+                    alert("Post updated!");
+                    app.toggleCreateForm(); // Close
+                    app.viewPost(editId); // Refresh view
+                } else {
+                    const json = await res.json();
+                    alert("Failed to update: " + (json.error || "Unknown error"));
+                }
+            } catch (err) {
+                alert("Error updating post.");
             }
-        } catch (err) {
-            alert("Error posting.");
+        } else {
+            // Create New Post
+            const fileInput = document.getElementById('post-file');
+            const formData = new FormData();
+            formData.append('title', title);
+            formData.append('content', content);
+            formData.append('author', author);
+            formData.append('password', password);
+
+            if (fileInput.files.length > 0) {
+                formData.append('attachment', fileInput.files[0]);
+            }
+
+            try {
+                const res = await fetch(`${API_URL}/r/${app.currentSub}`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (res.ok) {
+                    document.getElementById('post-title').value = '';
+                    document.getElementById('post-content').value = '';
+                    app.toggleCreateForm();
+                    app.loadPosts();
+                } else {
+                    alert("Failed to post.");
+                }
+            } catch (err) {
+                alert("Error posting.");
+            }
         }
     },
 
@@ -288,7 +388,8 @@ const app = {
                 <div class="post-actions">
                     <span class="vote-btn">⬆ ${p.upvotes}</span>
                     <span style="flex-grow:1"></span>
-                    <button onclick="app.deletePost(${p.id})" style="background:transparent; border:none; color:#666; cursor:pointer; font-size:0.8rem;">Delete</button>
+                    <button onclick="app.editPost(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="management-btn edit-btn">Edit</button>
+                    <button onclick="app.deletePost(${p.id})" class="management-btn delete-btn">Delete</button>
                 </div>
             `;
 
@@ -380,12 +481,34 @@ const app = {
         }
     },
 
+    editPost: (post) => {
+        // We need the password to open edit mode? Or just open it and check on submit.
+        // User's request: "누르면 해당 글의 비밀번호를 물어봐서 진행하는 방식"
+        const password = prompt("Enter post password to edit:");
+        if (!password) return;
+
+        // Populate form
+        document.getElementById('form-title').innerText = "Edit Post";
+        document.getElementById('edit-post-id').value = post.id;
+        document.getElementById('post-title').value = post.title;
+        document.getElementById('post-content').value = post.content;
+        document.getElementById('post-author').value = post.author;
+        document.getElementById('post-author').disabled = true; // Can't change author
+        document.getElementById('post-password').value = password;
+        document.getElementById('attachment-field').style.display = 'none'; // Can't change attachment for now
+        document.getElementById('post-submit-btn').innerText = "Update Post";
+
+        document.getElementById('create-post-form').style.display = 'block';
+    },
+
     exportAllToMd: async () => {
         if (!confirm("모든 게시글을 .md 파일로 일괄 추출하시겠습니까?\n(서버의 exports 폴더에 저장됩니다.)")) return;
 
         try {
             const res = await fetch(`${API_URL}/export`, {
-                method: 'POST'
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ adminPassword: 'admin123' }) // Hardcoded for now as per admin role
             });
             const json = await res.json();
             

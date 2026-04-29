@@ -308,3 +308,75 @@ textarea:focus {
 .fab:active {
     transform: scale(0.95);
 }
+
+/* Admin & Management UI */
+.admin-badge {
+    background: var(--text-secondary);
+    color: var(--bg-app);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.7rem;
+    font-weight: 800;
+    margin-right: 10px;
+    vertical-align: middle;
+    display: inline-block;
+}
+
+.management-btn {
+    background: transparent;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    padding: 5px 10px;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    transition: all 0.2s;
+    margin-right: 5px;
+}
+
+.management-btn:hover {
+    border-color: var(--text-primary);
+    color: var(--text-primary);
+    background: var(--bg-surface-hover);
+}
+
+.edit-btn, .delete-btn {
+    /* Maintain grayscale */
+    color: var(--text-secondary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.edit-btn:hover, .delete-btn:hover {
+    background: var(--bg-surface-hover) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--text-primary) !important;
+}
+
+#logout-btn, #export-btn, #login-btn {
+    /* Use theme colors, no specific red/green/gold */
+}
+
+/* Modal Overlay */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.7);
+    z-index: 1000;
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-content {
+    background: var(--bg-surface);
+    padding: 30px;
+    border-radius: 8px;
+    width: 100%;
+    max-width: 400px;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.5);
+    border: 1px solid var(--border-color);
+}
+
