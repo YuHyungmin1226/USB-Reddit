@@ -3,7 +3,10 @@ node_modules/
 jspm_packages/
 
 # Binaries (Node.js portable)
-bin/
+bin/node-darwin-arm64
+bin/node-darwin-x64
+!bin/*.tar.gz
+!bin/*.exe
 
 # SQLite database
 data/*.db
@@ -34,3 +37,4 @@ Thumbs.db
 
 # Local cache
 .npm-cache/
+.tmp_bin/
