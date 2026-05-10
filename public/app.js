@@ -258,8 +258,8 @@ const app = {
     },
 
     deleteCurrentSub: async () => {
-        if (app.currentSub === 'general' || app.currentSub === 'random') {
-            return alert("Cannot delete default subreddits.");
+        if (app.currentSub === 'general') {
+            return alert("Cannot delete default subreddit.");
         }
 
         const password = prompt(`Enter password to delete r/${app.currentSub}:`);

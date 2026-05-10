@@ -15,7 +15,12 @@ app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
 // Database Setup
-const dbPath = path.join(__dirname, '../data/reddit.db');
+const dbDir = path.join(__dirname, '../data');
+if (!fs.existsSync(dbDir)) {
+    fs.mkdirSync(dbDir, { recursive: true });
+}
+
+const dbPath = path.join(dbDir, 'reddit.db');
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error('Error opening database ' + dbPath + ': ' + err.message);
@@ -72,9 +77,9 @@ function initDb() {
         // Seed default subreddit if empty
         db.get("SELECT count(*) as count FROM subreddits", (err, row) => {
             if (row.count === 0) {
-                // Default subs with 'admin' password for now, or empty.
-                db.run(`INSERT INTO subreddits (name, description, password) VALUES ('general', 'General discussion', 'admin'), ('random', 'Random stuff', 'admin')`);
-                console.log("Seeded default subreddits.");
+                // Default sub with 'admin' password
+                db.run(`INSERT INTO subreddits (name, description, password) VALUES ('general', 'General discussion', 'admin')`);
+                console.log("Seeded default subreddit.");
             }
         });
     });
