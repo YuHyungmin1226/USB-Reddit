@@ -352,9 +352,6 @@ textarea:focus {
     border-color: var(--text-primary) !important;
 }
 
-#logout-btn, #export-btn, #login-btn {
-    /* Use theme colors, no specific red/green/gold */
-}
 
 /* Modal Overlay */
 .modal-overlay {
