@@ -107,6 +107,12 @@ const app = {
                 localStorage.setItem('isAdmin', 'true');
                 app.updateAdminUI();
                 app.closeLoginModal();
+                
+                // Re-render current post if viewing one to show admin buttons
+                if (app.currentPostId) {
+                    app.viewPost(app.currentPostId);
+                }
+                
                 alert("Logged in as admin.");
             } else {
                 alert("Login failed: " + (json.error || "Invalid credentials"));
@@ -120,6 +126,12 @@ const app = {
         app.isAdmin = false;
         localStorage.removeItem('isAdmin');
         app.updateAdminUI();
+        
+        // Re-render current post to hide admin buttons
+        if (app.currentPostId) {
+            app.viewPost(app.currentPostId);
+        }
+        
         alert("Logged out.");
     },
 
@@ -441,15 +453,16 @@ const app = {
                 
                 let deleteBtn = '';
                 if (app.isAdmin) {
-                    deleteBtn = `<button onclick="app.deleteComment(${c.id})" class="management-btn delete-btn" style="padding: 2px 8px; font-size: 0.7rem; margin-left: 10px;">Delete</button>`;
+                    // Increased visibility for admin delete button
+                    deleteBtn = `<button onclick="app.deleteComment(${c.id})" class="management-btn delete-btn" style="padding: 2px 8px; font-size: 0.75rem; margin-left: 12px; border-color: #ff4500 !important; color: #ff4500 !important;">Delete</button>`;
                 }
 
                 div.innerHTML = `
-                    <div class="meta">
-                        ${c.author} • ${new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString()}
+                    <div class="meta" style="display: flex; align-items: center;">
+                        <span>${c.author} • ${new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString()}</span>
                         ${deleteBtn}
                     </div>
-                    <div>${app.parseMarkdown(c.content)}</div>
+                    <div style="margin-top: 8px;">${app.parseMarkdown(c.content)}</div>
                 `;
                 commentsDiv.appendChild(div);
             });

@@ -1,5 +1,7 @@
 # Dependency directories
 node_modules/
+node_modules_mac/
+node_modules_win/
 jspm_packages/
 
 # Binaries (Node.js portable)

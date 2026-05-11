@@ -51,34 +51,71 @@ if exist "!LOCAL_NODE!" (
     )
 )
 
-REM 2. OS Swap for node_modules
+REM 2. Check Dependencies & OS Swap
+:: Check if current node_modules belongs to Mac
 if exist "node_modules\.os_mac" (
     echo [Info] Mac node_modules detected. Swapping to Windows...
     if exist "node_modules_mac" rmdir /s /q node_modules_mac
     ren node_modules node_modules_mac
 )
 
-if not exist "node_modules" (
-    if exist "node_modules_win" (
-        ren node_modules_win node_modules
-    ) else (
-        echo [Warning] node_modules folder missing.
-    )
+:: If Windows node_modules exists, rename it to active
+if exist "node_modules_win" (
+    ren node_modules_win node_modules
 )
 
-REM 3. Run Server
+if not exist "node_modules" goto :INSTALL_DEPS
+
+echo [Info] Checking dependencies (sqlite3 check)...
+"!NODE_BIN!" server/check_deps.js
+if !ERRORLEVEL! NEQ 0 goto :REINSTALL_DEPS
+
+:: Ensure .os_win marker exists
+if not exist "node_modules\.os_win" (
+    echo win > "node_modules\.os_win"
+)
+goto :RUN_SERVER
+
+:INSTALL_DEPS
+echo [Info] Installing dependencies for Windows...
+where npm >nul 2>nul
+if !ERRORLEVEL! NEQ 0 goto :NPM_NOT_FOUND
+call npm install --no-audit --no-fund
+if !ERRORLEVEL! NEQ 0 goto :INSTALL_FAILED
+:: Create marker file for Windows
+echo win > "node_modules\.os_win"
+goto :RUN_SERVER
+
+:REINSTALL_DEPS
+echo [Warning] Dependencies are invalid or mismatch.
+echo [Info] Re-installing dependencies...
+if exist "node_modules" rmdir /s /q node_modules
+goto :INSTALL_DEPS
+
+:NPM_NOT_FOUND
+echo [Error] npm을 찾을 수 없습니다. bin 폴더에 npm.cmd가 있는지 확인하세요.
+pause
+exit /b 1
+
+:INSTALL_FAILED
+echo [Error] npm install 실패. 인터넷 연결 또는 권한을 확인하세요.
+pause
+exit /b 1
+
+:RUN_SERVER
 echo [Info] Launching Server...
 if not exist "data" mkdir "data"
 if not exist "exports" mkdir "exports"
 if not exist "public\uploads" mkdir "public\uploads"
 
 "!NODE_BIN!" server/server.js
-if !ERRORLEVEL! NEQ 0 (
-    echo.
-    echo [Error] Server exited unexpectedly.
-    pause
-    exit /b 1
-)
-
+if !ERRORLEVEL! NEQ 0 goto :SERVER_ERROR
+echo [Info] 서버가 정상적으로 종료되었습니다.
 pause
 exit /b 0
+
+:SERVER_ERROR
+echo.
+echo [Error] Server exited unexpectedly.
+pause
+exit /b 1
