@@ -5,6 +5,7 @@ const app = {
     currentPostId: null,
     user: 'Guest',
     isAdmin: false,
+    passwordResolver: null,
 
     init: async () => {
         app.isAdmin = localStorage.getItem('isAdmin') === 'true';
@@ -145,7 +146,7 @@ const app = {
             addBtn.className = 'sub-link';
             addBtn.innerText = '+';
             addBtn.style.cursor = 'pointer';
-            addBtn.onclick = app.promptCreateSub;
+            addBtn.onclick = app.openCreateSubModal;
             nav.appendChild(addBtn);
 
         } catch (err) {
@@ -162,11 +163,24 @@ const app = {
         app.goHome();
     },
 
-    promptCreateSub: async () => {
-        const name = prompt("New Subreddit Name (e.g. funny):");
-        if (!name) return;
-        const desc = prompt("Description:");
-        const password = prompt("Set a management password:");
+    openCreateSubModal: () => {
+        document.getElementById('create-sub-modal').style.display = 'flex';
+        document.getElementById('new-sub-name').value = '';
+        document.getElementById('new-sub-desc').value = '';
+        document.getElementById('new-sub-password').value = '';
+        document.getElementById('new-sub-name').focus();
+    },
+
+    closeCreateSubModal: () => {
+        document.getElementById('create-sub-modal').style.display = 'none';
+    },
+
+    submitCreateSub: async () => {
+        const name = document.getElementById('new-sub-name').value;
+        const desc = document.getElementById('new-sub-desc').value;
+        const password = document.getElementById('new-sub-password').value;
+
+        if (!name) return alert("Subreddit name is required.");
         if (!password) return alert("Password is required.");
 
         try {
@@ -176,6 +190,7 @@ const app = {
                 body: JSON.stringify({ name, description: desc, password })
             });
             if (res.ok) {
+                app.closeCreateSubModal();
                 app.loadSubreddits();
                 app.switchSub(name);
             } else {
@@ -262,7 +277,7 @@ const app = {
             return alert("Cannot delete default subreddit.");
         }
 
-        const password = prompt(`Enter password to delete r/${app.currentSub}:`);
+        const password = await app.requestPassword(`Delete r/${app.currentSub}`, "This action cannot be undone.");
         if (!password) return;
 
         if (!confirm(`Permanently delete r/${app.currentSub} and ALL its posts?`)) return;
@@ -456,7 +471,7 @@ const app = {
     },
 
     deletePost: async (id) => {
-        const password = prompt("Enter the password you set when creating this post:");
+        const password = await app.requestPassword("Delete Post", "Enter the password you set when creating this post.");
         if (!password) return;
 
         if (!confirm("Are you sure you want to delete this post?")) return;
@@ -481,10 +496,10 @@ const app = {
         }
     },
 
-    editPost: (post) => {
+    editPost: async (post) => {
         // We need the password to open edit mode? Or just open it and check on submit.
         // User's request: "누르면 해당 글의 비밀번호를 물어봐서 진행하는 방식"
-        const password = prompt("Enter post password to edit:");
+        const password = await app.requestPassword("Edit Post", "Enter post password to edit:");
         if (!password) return;
 
         // Populate form
@@ -520,6 +535,40 @@ const app = {
         } catch (err) {
             alert("❌ 서버 연결 오류");
             console.error(err);
+        }
+    },
+
+    // --- Modal Helpers ---
+
+    requestPassword: (title, msg) => {
+        return new Promise((resolve) => {
+            const modal = document.getElementById('password-modal');
+            document.getElementById('password-modal-title').innerText = title || "Password Required";
+            document.getElementById('password-modal-msg').innerText = msg || "";
+            document.getElementById('password-modal-input').value = '';
+            modal.style.display = 'flex';
+            document.getElementById('password-modal-input').focus();
+
+            app.passwordResolver = resolve;
+        });
+    },
+
+    resolvePasswordPromise: () => {
+        const password = document.getElementById('password-modal-input').value;
+        if (!password) return alert("Password is required.");
+        
+        document.getElementById('password-modal').style.display = 'none';
+        if (app.passwordResolver) {
+            app.passwordResolver(password);
+            app.passwordResolver = null;
+        }
+    },
+
+    rejectPasswordPromise: () => {
+        document.getElementById('password-modal').style.display = 'none';
+        if (app.passwordResolver) {
+            app.passwordResolver(null);
+            app.passwordResolver = null;
         }
     }
 };

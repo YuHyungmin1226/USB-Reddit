@@ -98,6 +98,35 @@
         </div>
     </div>
 
+    <!-- Password Prompt Modal -->
+    <div id="password-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3 id="password-modal-title">Password Required</h3>
+            <p id="password-modal-msg" style="font-size: 0.9rem; color: #aaa; margin-bottom: 15px;"></p>
+            <input type="password" id="password-modal-input" placeholder="Enter password" onkeyup="if(event.key==='Enter') app.resolvePasswordPromise()">
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button onclick="app.rejectPasswordPromise()"
+                    style="background: transparent; color: #888; border: none; cursor: pointer;">Cancel</button>
+                <button class="primary-btn" onclick="app.resolvePasswordPromise()">Confirm</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Subreddit Modal -->
+    <div id="create-sub-modal" class="modal-overlay">
+        <div class="modal-content">
+            <h3>Create New Subreddit</h3>
+            <input type="text" id="new-sub-name" placeholder="Subreddit Name (e.g. funny)">
+            <input type="text" id="new-sub-desc" placeholder="Description">
+            <input type="password" id="new-sub-password" placeholder="Management Password">
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button onclick="app.closeCreateSubModal()"
+                    style="background: transparent; color: #888; border: none; cursor: pointer;">Cancel</button>
+                <button class="primary-btn" onclick="app.submitCreateSub()">Create</button>
+            </div>
+        </div>
+    </div>
+
     <script src="app.js"></script>
 </body>
 
