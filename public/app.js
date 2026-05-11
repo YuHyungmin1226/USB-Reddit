@@ -37,24 +37,7 @@ const app = {
             const hasContent = document.getElementById('post-content').value;
 
             if (forceReset || (!currentId && !hasTitle && !hasContent)) {
-                const subNameSpan = document.getElementById('create-post-sub-name');
-                if (subNameSpan) {
-                    document.getElementById('form-title').innerHTML = `Create Post in r/<span id="create-post-sub-name">${app.currentSub}</span>`;
-                } else {
-                    document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
-                }
-                document.getElementById('edit-post-id').value = '';
-                document.getElementById('post-title').value = '';
-                document.getElementById('post-content').value = '';
-                document.getElementById('post-author').disabled = false;
-                document.getElementById('post-password').value = '';
-                document.getElementById('attachment-field').style.display = 'block';
-                document.getElementById('post-submit-btn').innerText = "Post";
-                
-                // Auto fill author if known
-                if (app.user !== 'Guest') {
-                    document.getElementById('post-author').value = app.user;
-                }
+                app.resetPostForm();
             }
 
             form.style.display = 'block';
@@ -63,6 +46,27 @@ const app = {
                 subNameSpan.innerText = app.currentSub;
             }
             window.scrollTo(0, 0); // Scroll to top to see the form
+        }
+    },
+
+    resetPostForm: () => {
+        const subNameSpan = document.getElementById('create-post-sub-name');
+        if (subNameSpan) {
+            document.getElementById('form-title').innerHTML = `Create Post in r/<span id="create-post-sub-name">${app.currentSub}</span>`;
+        } else {
+            document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
+        }
+        document.getElementById('edit-post-id').value = '';
+        document.getElementById('post-title').value = '';
+        document.getElementById('post-content').value = '';
+        document.getElementById('post-author').disabled = false;
+        document.getElementById('post-password').value = '';
+        document.getElementById('attachment-field').style.display = 'block';
+        document.getElementById('post-submit-btn').innerText = "Post";
+        
+        // Auto fill author if known
+        if (app.user !== 'Guest') {
+            document.getElementById('post-author').value = app.user;
         }
     },
 
@@ -353,8 +357,8 @@ const app = {
 
                 if (res.ok) {
                     alert("Post updated!");
-                    app.toggleCreateForm(true); // Close and Force Reset ID/Fields
-                    app.viewPost(editId); // Refresh view
+                    app.resetPostForm();
+                    app.goHome(); // This hides form and refreshes list
                 } else {
                     const json = await res.json();
                     alert("Failed to update: " + (json.error || "Unknown error"));
@@ -382,8 +386,8 @@ const app = {
                 });
 
                 if (res.ok) {
-                    app.toggleCreateForm(true); // Close and Reset
-                    app.loadPosts();
+                    app.resetPostForm();
+                    app.goHome(); // Hide form and refresh list
                 } else {
                     const json = await res.json();
                     alert("Failed to post: " + (json.error || "Unknown error"));
