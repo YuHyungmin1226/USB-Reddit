@@ -438,8 +438,17 @@ const app = {
             json.comments.forEach(c => {
                 const div = document.createElement('div');
                 div.className = 'comment';
+                
+                let deleteBtn = '';
+                if (app.isAdmin) {
+                    deleteBtn = `<button onclick="app.deleteComment(${c.id})" class="management-btn delete-btn" style="padding: 2px 8px; font-size: 0.7rem; margin-left: 10px;">Delete</button>`;
+                }
+
                 div.innerHTML = `
-                    <div class="meta">${c.author} • ${new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString()}</div>
+                    <div class="meta">
+                        ${c.author} • ${new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString()}
+                        ${deleteBtn}
+                    </div>
                     <div>${app.parseMarkdown(c.content)}</div>
                 `;
                 commentsDiv.appendChild(div);
@@ -471,6 +480,28 @@ const app = {
             app.viewPost(app.currentPostId); // Reload
         } catch (err) {
             alert("Failed to comment");
+        }
+    },
+
+    deleteComment: async (id) => {
+        if (!confirm("Are you sure you want to delete this comment?")) return;
+
+        try {
+            const res = await fetch(`${API_URL}/comments/${id}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ adminPassword: 'admin123' })
+            });
+
+            if (res.ok) {
+                app.viewPost(app.currentPostId); // Reload
+            } else {
+                const json = await res.json();
+                alert("Failed to delete comment: " + (json.error || "Unknown error"));
+            }
+        } catch (err) {
+            alert("Error deleting comment");
+            console.error(err);
         }
     },
 

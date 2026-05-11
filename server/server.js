@@ -257,6 +257,21 @@ app.post('/api/comments', (req, res) => {
         });
 });
 
+// 6.1 Delete comment (Admin only)
+app.delete('/api/comments/:id', (req, res) => {
+    const commentId = req.params.id;
+    const { adminPassword } = req.body;
+
+    if (adminPassword !== 'admin123') {
+        return res.status(403).json({ error: "Admin access required" });
+    }
+
+    db.run("DELETE FROM comments WHERE id = ?", [commentId], function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Comment deleted successfully" });
+    });
+});
+
 // 7. Delete post (with password check)
 app.delete('/api/posts/:id', (req, res) => {
     const postId = req.params.id;
