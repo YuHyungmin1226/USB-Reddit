@@ -462,22 +462,32 @@ const app = {
 
     parseMarkdown: (text) => {
         if (!text) return '';
-        // Simple parser
-        let html = text
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, url) => {
-                if (alt === 'video' || url.match(/\.(mp4|webm)$/i)) {
-                    return `<video controls src="${url}" style="max-width:100%"></video>`;
-                }
-                return `<img src="${url}" alt="${alt}" style="max-width:100%">`;
-            })
-            // YouTube Link Parser
-            .replace(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]+)/g, '<div class="video-container"><iframe src="https://www.youtube.com/embed/$1" frameborder="0" allowfullscreen></iframe></div>')
-            .replace(/\n/g, '<br>');
+        
+        // Configure marked options
+        marked.setOptions({
+            breaks: true, // Support single line breaks
+            gfm: true,    // GitHub Flavored Markdown
+            headerIds: false,
+            mangle: false
+        });
+
+        // Custom renderer to support video files in image syntax ![video](url)
+        const renderer = new marked.Renderer();
+        const originalImage = renderer.image.bind(renderer);
+        renderer.image = (href, title, text) => {
+            if (text === 'video' || href.match(/\.(mp4|webm|ogg)$/i)) {
+                return `<video controls src="${href}" style="max-width:100%; border-radius:4px; margin-top:10px;"></video>`;
+            }
+            return originalImage(href, title, text);
+        };
+
+        // Parse with marked
+        let html = marked.parse(text, { renderer });
+
+        // YouTube Link Parser (Post-processing)
+        html = html.replace(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]+)/g, 
+            '<div class="video-container"><iframe src="https://www.youtube.com/embed/$1" frameborder="0" allowfullscreen></iframe></div>');
+
         return html;
     },
 
