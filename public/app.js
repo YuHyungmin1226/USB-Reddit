@@ -37,7 +37,12 @@ const app = {
             const hasContent = document.getElementById('post-content').value;
 
             if (forceReset || (!currentId && !hasTitle && !hasContent)) {
-                document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
+                const subNameSpan = document.getElementById('create-post-sub-name');
+                if (subNameSpan) {
+                    document.getElementById('form-title').innerHTML = `Create Post in r/<span id="create-post-sub-name">${app.currentSub}</span>`;
+                } else {
+                    document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
+                }
                 document.getElementById('edit-post-id').value = '';
                 document.getElementById('post-title').value = '';
                 document.getElementById('post-content').value = '';
@@ -53,7 +58,10 @@ const app = {
             }
 
             form.style.display = 'block';
-            document.getElementById('create-post-sub-name').innerText = app.currentSub;
+            const subNameSpan = document.getElementById('create-post-sub-name');
+            if (subNameSpan) {
+                subNameSpan.innerText = app.currentSub;
+            }
             window.scrollTo(0, 0); // Scroll to top to see the form
         }
     },
@@ -527,6 +535,9 @@ const app = {
 
         // Populate form
         document.getElementById('form-title').innerText = "Edit Post";
+        // Ensure span is removed or handled if we are in Edit mode to avoid confusion, 
+        // but toggleCreateForm might look for it. Let's just set the text.
+        // To be safe, we'll just check existence in toggleCreateForm.
         document.getElementById('edit-post-id').value = post.id;
         document.getElementById('post-title').value = post.title;
         document.getElementById('post-content').value = post.content;
