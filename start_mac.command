@@ -31,6 +31,8 @@ if [ "$ARCH" = "arm64" ]; then
         mv "bin/node" "$ARM_BIN"
     fi
     [ -f "$ARM_BIN" ] && NODE_LOCAL="$ARM_BIN"
+    TARGET_MODULES="node_modules_mac_arm64"
+    MARKER=".os_mac_arm64"
 elif [ "$ARCH" = "x86_64" ]; then
     if [ ! -f "$X64_BIN" ] && [ -f "$X64_TAR" ]; then
         echo -e "${YELLOW}[Info] Extracting portable Node.js for Intel...${NC}"
@@ -38,6 +40,8 @@ elif [ "$ARCH" = "x86_64" ]; then
         mv "bin/node" "$X64_BIN"
     fi
     [ -f "$X64_BIN" ] && NODE_LOCAL="$X64_BIN"
+    TARGET_MODULES="node_modules_mac_x64"
+    MARKER=".os_mac_x64"
 fi
 
 if [ -n "$NODE_LOCAL" ]; then
@@ -58,41 +62,43 @@ fi
 
 echo -e "${GREEN}[Info] Node.js version: $(node -v)${NC}"
 
-# 2. Check Dependencies & OS Swap
-if [ -f "node_modules/.os_win" ]; then
-    echo -e "${YELLOW}[Info] Windows node_modules detected. Swapping to Mac...${NC}"
-    mv node_modules node_modules_win
+# 2. Perfect Portable Module Swapping (Zero Install)
+echo -e "${YELLOW}[Info] Verifying portable dependencies...${NC}"
+
+# Hide current node_modules if it's not the target one
+if [ -d "node_modules" ]; then
+    if [ ! -f "node_modules/$MARKER" ]; then
+        if [ -f "node_modules/.os_win" ]; then
+            mv node_modules node_modules_win
+        elif [ -f "node_modules/.os_mac_x64" ]; then
+            mv node_modules node_modules_mac_x64
+        elif [ -f "node_modules/.os_mac_arm64" ]; then
+            mv node_modules node_modules_mac_arm64
+        else
+            # Unknown state, just assume it's windows to be safe
+            mv node_modules node_modules_win
+        fi
+    fi
 fi
 
-if [ -d "node_modules_mac" ]; then
-    mv node_modules_mac node_modules
+# Swap the target node_modules in
+if [ -d "$TARGET_MODULES" ]; then
+    if [ -d "node_modules" ]; then
+        rm -rf node_modules
+    fi
+    mv "$TARGET_MODULES" node_modules
 fi
 
 if [ ! -d "node_modules" ]; then
-    echo -e "${YELLOW}[Info] node_modules not found. Installing dependencies for Mac...${NC}"
-    npm install --no-audit --no-fund
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}[Error] npm install failed.${NC}"
-        echo "Press any key to exit..."
-        read -n 1
-        exit 1
-    fi
-    touch node_modules/.os_mac
-else
-    echo -e "${GREEN}[Info] Checking dependencies (sqlite3 check)...${NC}"
-    node server/check_deps.js
-    if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}[Warning] Dependencies are invalid or outdated.${NC}"
-        echo -e "${YELLOW}[Info] Re-installing dependencies...${NC}"
-        rm -rf node_modules
-        npm install --no-audit --no-fund
-        if [ $? -ne 0 ]; then
-             echo -e "${RED}[Error] Re-installation failed.${NC}"
-             exit 1
-        fi
-    fi
-    touch node_modules/.os_mac
+    echo -e "${RED}[Error] Portable node_modules not found for $ARCH!${NC}"
+    echo "Please ensure the USB has the pre-bundled node_modules folders."
+    echo "Press any key to exit..."
+    read -n 1
+    exit 1
 fi
+
+# Ensure marker exists
+touch "node_modules/$MARKER"
 
 # 3. Ensure necessary directories exist
 mkdir -p data exports public/uploads

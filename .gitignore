@@ -1,7 +1,5 @@
 # Dependency directories
-node_modules/
-node_modules_mac/
-node_modules_win/
+# (Node_modules are intentionally tracked for zero-install portability)
 jspm_packages/
 
 # Binaries (Node.js portable)
@@ -40,6 +38,5 @@ Thumbs.db
 # Local cache
 .npm-cache/
 .tmp_bin/
-node_modules_mac/
 bin/*.zip
 ._*
