@@ -146,10 +146,18 @@ app.delete('/api/subreddits/:id', (req, res) => {
 // 3. Get posts for a subreddit
 app.get('/api/r/:subreddit_name', (req, res) => {
     const subName = req.params.subreddit_name;
+
     db.get("SELECT id FROM subreddits WHERE name = ?", [subName], (err, sub) => {
         if (err || !sub) return res.status(404).json({ error: "Subreddit not found" });
 
-        db.all("SELECT * FROM posts WHERE subreddit_id = ? ORDER BY created_at DESC", [sub.id], (err, rows) => {
+        const query = `
+            SELECT posts.*, subreddits.name as subreddit_name 
+            FROM posts 
+            LEFT JOIN subreddits ON posts.subreddit_id = subreddits.id 
+            WHERE posts.subreddit_id = ? 
+            ORDER BY posts.created_at DESC
+        `;
+        db.all(query, [sub.id], (err, rows) => {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ data: rows });
         });
@@ -180,6 +188,7 @@ const upload = multer({ storage: storage });
 // 4. Create post (with optional file attachment)
 app.post('/api/r/:subreddit_name', upload.single('attachment'), (req, res) => {
     const subName = req.params.subreddit_name;
+    
     let { title, content, author, password } = req.body;
 
     if (!password) {

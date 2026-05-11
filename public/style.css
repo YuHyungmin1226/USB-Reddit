@@ -167,6 +167,84 @@ h1.logo:hover {
     height: 100%;
 }
 
+/* Markdown Specific Styles */
+#single-post-content h1, .comment h1 { font-size: 1.6rem; border-bottom: 1px solid var(--border-color); padding-bottom: 8px; margin: 24px 0 16px; }
+#single-post-content h2, .comment h2 { font-size: 1.4rem; border-bottom: 1px solid var(--border-color); padding-bottom: 6px; margin: 20px 0 14px; }
+#single-post-content h3, .comment h3 { font-size: 1.2rem; margin: 18px 0 12px; }
+#single-post-content h4, .comment h4 { font-size: 1.1rem; margin: 16px 0 10px; }
+
+#single-post-content ul, #single-post-content ol,
+.comment ul, .comment ol {
+    padding-left: 25px;
+    margin-bottom: 16px;
+}
+
+#single-post-content li, .comment li {
+    margin-bottom: 6px;
+}
+
+#single-post-content blockquote, .comment blockquote {
+    border-left: 4px solid var(--border-color);
+    margin: 16px 0;
+    padding: 10px 20px;
+    color: var(--text-secondary);
+    background: var(--bg-surface);
+}
+
+#single-post-content code, .comment code {
+    background: #2d2d2d;
+    padding: 2px 5px;
+    border-radius: 4px;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 0.9em;
+}
+
+#single-post-content pre, .comment pre {
+    background: #2d2d2d;
+    padding: 15px;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 16px 0;
+}
+
+#single-post-content pre code, .comment pre code {
+    background: transparent;
+    padding: 0;
+    display: block;
+}
+
+#single-post-content a, .comment a {
+    color: #4da6ff;
+    text-decoration: none;
+}
+
+#single-post-content a:hover, .comment a:hover {
+    text-decoration: underline;
+}
+
+#single-post-content hr, .comment hr {
+    border: none;
+    border-top: 1px solid var(--border-color);
+    margin: 24px 0;
+}
+
+#single-post-content table, .comment table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+}
+
+#single-post-content th, #single-post-content td,
+.comment th, .comment td {
+    border: 1px solid var(--border-color);
+    padding: 8px 12px;
+    text-align: left;
+}
+
+#single-post-content th, .comment th {
+    background: var(--bg-surface);
+}
+
 /* Post Cards (Flat, clean, defined) */
 .post-list {
     display: flex;

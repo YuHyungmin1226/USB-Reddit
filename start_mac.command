@@ -58,40 +58,35 @@ fi
 
 echo -e "${GREEN}[Info] Node.js version: $(node -v)${NC}"
 
-# 2. Check if node_modules exists
+# 2. Check Dependencies
 if [ ! -d "node_modules" ]; then
-    echo -e "${YELLOW}[Info] node_modules not found. Installing dependencies (using local cache)...${NC}"
-    npm install --cache .npm-cache --no-audit --no-fund
+    echo -e "${YELLOW}[Info] node_modules not found. Installing dependencies...${NC}"
+    npm install --no-audit --no-fund
     if [ $? -ne 0 ]; then
         echo -e "${RED}[Error] npm install failed.${NC}"
-        echo -e "${YELLOW}[Tip] If you see 'EACCES' or 'permission denied', try running this command in a new terminal:${NC}"
-        echo -e "      sudo chown -R \$(whoami) ~/.npm"
-        echo ""
-        echo "Alternatively, you can try running: npm install --cache .npm-cache"
         echo "Press any key to exit..."
         read -n 1
         exit 1
     fi
 else
-    # 3. Check if dependencies are valid (sqlite3 check)
-    echo -e "${GREEN}[Info] Checking dependencies...${NC}"
+    echo -e "${GREEN}[Info] Checking dependencies (sqlite3 check)...${NC}"
     node server/check_deps.js
     if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}[Warning] Dependencies mismatch detected (Architecture changed?).${NC}"
-        echo -e "${YELLOW}[Info] Re-installing dependencies (using local cache)...${NC}"
+        echo -e "${YELLOW}[Warning] Dependencies are invalid or outdated.${NC}"
+        echo -e "${YELLOW}[Info] Re-installing dependencies...${NC}"
         rm -rf node_modules
-        npm install --cache .npm-cache --no-audit --no-fund
+        npm install --no-audit --no-fund
         if [ $? -ne 0 ]; then
-             echo -e "${RED}[Error] npm install failed during re-installation.${NC}"
+             echo -e "${RED}[Error] Re-installation failed.${NC}"
              exit 1
         fi
     fi
 fi
 
-# 4. Ensure necessary directories exist
+# 3. Ensure necessary directories exist
 mkdir -p data exports public/uploads
 
-# 5. Run Server
+# 4. Run Server
 echo -e "${BLUE}[Info] Launching Server...${NC}"
 node server/server.js
 

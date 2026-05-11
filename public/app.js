@@ -5,6 +5,7 @@ const app = {
     currentPostId: null,
     user: 'Guest',
     isAdmin: false,
+    passwordResolver: null,
 
     init: async () => {
         app.isAdmin = localStorage.getItem('isAdmin') === 'true';
@@ -23,27 +24,49 @@ const app = {
         app.loadPosts(app.currentSub);
     },
 
-    toggleCreateForm: () => {
+    toggleCreateForm: (forceReset = false) => {
         const form = document.getElementById('create-post-form');
-        if (form.style.display === 'block') {
+        const isVisible = form.style.display === 'block';
+
+        if (isVisible && !forceReset) {
             form.style.display = 'none';
         } else {
-            // Reset form if it was in edit mode
-            document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
-            document.getElementById('edit-post-id').value = '';
-            document.getElementById('post-title').value = '';
-            document.getElementById('post-content').value = '';
-            document.getElementById('post-author').disabled = false;
-            document.getElementById('post-password').value = '';
-            document.getElementById('attachment-field').style.display = 'block';
-            document.getElementById('post-submit-btn').innerText = "Post";
+            // Only reset if requested or if we are not already in the middle of something
+            const currentId = document.getElementById('edit-post-id').value;
+            const hasTitle = document.getElementById('post-title').value;
+            const hasContent = document.getElementById('post-content').value;
+
+            if (forceReset || (!currentId && !hasTitle && !hasContent)) {
+                app.resetPostForm();
+            }
 
             form.style.display = 'block';
-            document.getElementById('create-post-sub-name').innerText = app.currentSub;
-            // Auto fill author if known
-            if (app.user !== 'Guest') {
-                document.getElementById('post-author').value = app.user;
+            const subNameSpan = document.getElementById('create-post-sub-name');
+            if (subNameSpan) {
+                subNameSpan.innerText = app.currentSub;
             }
+            window.scrollTo(0, 0); // Scroll to top to see the form
+        }
+    },
+
+    resetPostForm: () => {
+        const subNameSpan = document.getElementById('create-post-sub-name');
+        if (subNameSpan) {
+            document.getElementById('form-title').innerHTML = `Create Post in r/<span id="create-post-sub-name">${app.currentSub}</span>`;
+        } else {
+            document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
+        }
+        document.getElementById('edit-post-id').value = '';
+        document.getElementById('post-title').value = '';
+        document.getElementById('post-content').value = '';
+        document.getElementById('post-author').disabled = false;
+        document.getElementById('post-password').value = '';
+        document.getElementById('attachment-field').style.display = 'block';
+        document.getElementById('post-submit-btn').innerText = "Post";
+        
+        // Auto fill author if known
+        if (app.user !== 'Guest') {
+            document.getElementById('post-author').value = app.user;
         }
     },
 
@@ -126,7 +149,6 @@ const app = {
             const res = await fetch(`${API_URL}/subreddits`);
             const json = await res.json();
             const nav = document.getElementById('sub-nav');
-            // Keep 'All' or 'Random' logic if needed, for now just list subs
             nav.innerHTML = '';
 
             json.data.forEach(sub => {
@@ -145,7 +167,7 @@ const app = {
             addBtn.className = 'sub-link';
             addBtn.innerText = '+';
             addBtn.style.cursor = 'pointer';
-            addBtn.onclick = app.promptCreateSub;
+            addBtn.onclick = app.openCreateSubModal;
             nav.appendChild(addBtn);
 
         } catch (err) {
@@ -162,11 +184,24 @@ const app = {
         app.goHome();
     },
 
-    promptCreateSub: async () => {
-        const name = prompt("New Subreddit Name (e.g. funny):");
-        if (!name) return;
-        const desc = prompt("Description:");
-        const password = prompt("Set a management password:");
+    openCreateSubModal: () => {
+        document.getElementById('create-sub-modal').style.display = 'flex';
+        document.getElementById('new-sub-name').value = '';
+        document.getElementById('new-sub-desc').value = '';
+        document.getElementById('new-sub-password').value = '';
+        document.getElementById('new-sub-name').focus();
+    },
+
+    closeCreateSubModal: () => {
+        document.getElementById('create-sub-modal').style.display = 'none';
+    },
+
+    submitCreateSub: async () => {
+        const name = document.getElementById('new-sub-name').value;
+        const desc = document.getElementById('new-sub-desc').value;
+        const password = document.getElementById('new-sub-password').value;
+
+        if (!name) return alert("Subreddit name is required.");
         if (!password) return alert("Password is required.");
 
         try {
@@ -176,6 +211,7 @@ const app = {
                 body: JSON.stringify({ name, description: desc, password })
             });
             if (res.ok) {
+                app.closeCreateSubModal();
                 app.loadSubreddits();
                 app.switchSub(name);
             } else {
@@ -239,10 +275,11 @@ const app = {
                 card.onclick = () => app.viewPost(post.id);
 
                 const date = new Date(post.created_at.replace(' ', 'T') + 'Z').toLocaleDateString();
+                const displaySub = post.subreddit_name || subreddit;
 
                 card.innerHTML = `
                     <div class="post-meta">
-                        <span class="subreddit-tag">r/${subreddit}</span> • Posted by ${post.author} • ${date}
+                        <span class="subreddit-tag">r/${displaySub}</span> • Posted by ${post.author} • ${date}
                     </div>
                     <h2 class="post-title">${post.title}</h2>
                     <div class="post-actions">
@@ -262,7 +299,7 @@ const app = {
             return alert("Cannot delete default subreddit.");
         }
 
-        const password = prompt(`Enter password to delete r/${app.currentSub}:`);
+        const password = await app.requestPassword(`Delete r/${app.currentSub}`, "This action cannot be undone.");
         if (!password) return;
 
         if (!confirm(`Permanently delete r/${app.currentSub} and ALL its posts?`)) return;
@@ -301,9 +338,13 @@ const app = {
         const title = document.getElementById('post-title').value;
         const content = document.getElementById('post-content').value;
         const author = document.getElementById('post-author').value || 'Anonymous';
-        const password = document.getElementById('post-password').value;
+        let password = document.getElementById('post-password').value;
         
-        if (!password) return alert("Password is required for post management.");
+        if (!password) {
+            password = await app.requestPassword("Password Required", "Set a password to manage (edit/delete) this post later:");
+            if (!password) return;
+            document.getElementById('post-password').value = password;
+        }
 
         if (editId) {
             // Update Existing Post
@@ -316,8 +357,8 @@ const app = {
 
                 if (res.ok) {
                     alert("Post updated!");
-                    app.toggleCreateForm(); // Close
-                    app.viewPost(editId); // Refresh view
+                    app.resetPostForm();
+                    app.goHome(); // This hides form and refreshes list
                 } else {
                     const json = await res.json();
                     alert("Failed to update: " + (json.error || "Unknown error"));
@@ -345,12 +386,11 @@ const app = {
                 });
 
                 if (res.ok) {
-                    document.getElementById('post-title').value = '';
-                    document.getElementById('post-content').value = '';
-                    app.toggleCreateForm();
-                    app.loadPosts();
+                    app.resetPostForm();
+                    app.goHome(); // Hide form and refresh list
                 } else {
-                    alert("Failed to post.");
+                    const json = await res.json();
+                    alert("Failed to post: " + (json.error || "Unknown error"));
                 }
             } catch (err) {
                 alert("Error posting.");
@@ -436,27 +476,37 @@ const app = {
 
     parseMarkdown: (text) => {
         if (!text) return '';
-        // Simple parser
-        let html = text
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-            .replace(/\*(.*?)\*/g, '<em>$1</em>')
-            .replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, url) => {
-                if (alt === 'video' || url.match(/\.(mp4|webm)$/i)) {
-                    return `<video controls src="${url}" style="max-width:100%"></video>`;
-                }
-                return `<img src="${url}" alt="${alt}" style="max-width:100%">`;
-            })
-            // YouTube Link Parser
-            .replace(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]+)/g, '<div class="video-container"><iframe src="https://www.youtube.com/embed/$1" frameborder="0" allowfullscreen></iframe></div>')
-            .replace(/\n/g, '<br>');
+        
+        // Configure marked options
+        marked.setOptions({
+            breaks: true, // Support single line breaks
+            gfm: true,    // GitHub Flavored Markdown
+            headerIds: false,
+            mangle: false
+        });
+
+        // Custom renderer to support video files in image syntax ![video](url)
+        const renderer = new marked.Renderer();
+        const originalImage = renderer.image.bind(renderer);
+        renderer.image = (href, title, text) => {
+            if (text === 'video' || href.match(/\.(mp4|webm|ogg)$/i)) {
+                return `<video controls src="${href}" style="max-width:100%; border-radius:4px; margin-top:10px;"></video>`;
+            }
+            return originalImage(href, title, text);
+        };
+
+        // Parse with marked
+        let html = marked.parse(text, { renderer });
+
+        // YouTube Link Parser (Post-processing)
+        html = html.replace(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]+)/g, 
+            '<div class="video-container"><iframe src="https://www.youtube.com/embed/$1" frameborder="0" allowfullscreen></iframe></div>');
+
         return html;
     },
 
     deletePost: async (id) => {
-        const password = prompt("Enter the password you set when creating this post:");
+        const password = await app.requestPassword("Delete Post", "Enter the password you set when creating this post.");
         if (!password) return;
 
         if (!confirm("Are you sure you want to delete this post?")) return;
@@ -481,14 +531,17 @@ const app = {
         }
     },
 
-    editPost: (post) => {
+    editPost: async (post) => {
         // We need the password to open edit mode? Or just open it and check on submit.
         // User's request: "누르면 해당 글의 비밀번호를 물어봐서 진행하는 방식"
-        const password = prompt("Enter post password to edit:");
+        const password = await app.requestPassword("Edit Post", "Enter post password to edit:");
         if (!password) return;
 
         // Populate form
         document.getElementById('form-title').innerText = "Edit Post";
+        // Ensure span is removed or handled if we are in Edit mode to avoid confusion, 
+        // but toggleCreateForm might look for it. Let's just set the text.
+        // To be safe, we'll just check existence in toggleCreateForm.
         document.getElementById('edit-post-id').value = post.id;
         document.getElementById('post-title').value = post.title;
         document.getElementById('post-content').value = post.content;
@@ -520,6 +573,40 @@ const app = {
         } catch (err) {
             alert("❌ 서버 연결 오류");
             console.error(err);
+        }
+    },
+
+    // --- Modal Helpers ---
+
+    requestPassword: (title, msg) => {
+        return new Promise((resolve) => {
+            const modal = document.getElementById('password-modal');
+            document.getElementById('password-modal-title').innerText = title || "Password Required";
+            document.getElementById('password-modal-msg').innerText = msg || "";
+            document.getElementById('password-modal-input').value = '';
+            modal.style.display = 'flex';
+            document.getElementById('password-modal-input').focus();
+
+            app.passwordResolver = resolve;
+        });
+    },
+
+    resolvePasswordPromise: () => {
+        const password = document.getElementById('password-modal-input').value;
+        if (!password) return alert("Password is required.");
+        
+        document.getElementById('password-modal').style.display = 'none';
+        if (app.passwordResolver) {
+            app.passwordResolver(password);
+            app.passwordResolver = null;
+        }
+    },
+
+    rejectPasswordPromise: () => {
+        document.getElementById('password-modal').style.display = 'none';
+        if (app.passwordResolver) {
+            app.passwordResolver(null);
+            app.passwordResolver = null;
         }
     }
 };
