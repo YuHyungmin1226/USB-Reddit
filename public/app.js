@@ -33,7 +33,10 @@ const app = {
         } else {
             // Only reset if requested or if we are not already in the middle of something
             const currentId = document.getElementById('edit-post-id').value;
-            if (forceReset || (!currentId && !document.getElementById('post-title').value && !document.getElementById('post-content').value)) {
+            const hasTitle = document.getElementById('post-title').value;
+            const hasContent = document.getElementById('post-content').value;
+
+            if (forceReset || (!currentId && !hasTitle && !hasContent)) {
                 document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
                 document.getElementById('edit-post-id').value = '';
                 document.getElementById('post-title').value = '';
@@ -342,7 +345,7 @@ const app = {
 
                 if (res.ok) {
                     alert("Post updated!");
-                    app.toggleCreateForm(); // Close
+                    app.toggleCreateForm(true); // Close and Force Reset ID/Fields
                     app.viewPost(editId); // Refresh view
                 } else {
                     const json = await res.json();
@@ -371,9 +374,7 @@ const app = {
                 });
 
                 if (res.ok) {
-                    document.getElementById('post-title').value = '';
-                    document.getElementById('post-content').value = '';
-                    app.toggleCreateForm();
+                    app.toggleCreateForm(true); // Close and Reset
                     app.loadPosts();
                 } else {
                     const json = await res.json();
