@@ -24,27 +24,34 @@ const app = {
         app.loadPosts(app.currentSub);
     },
 
-    toggleCreateForm: () => {
+    toggleCreateForm: (forceReset = false) => {
         const form = document.getElementById('create-post-form');
-        if (form.style.display === 'block') {
+        const isVisible = form.style.display === 'block';
+
+        if (isVisible && !forceReset) {
             form.style.display = 'none';
         } else {
-            // Reset form if it was in edit mode
-            document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
-            document.getElementById('edit-post-id').value = '';
-            document.getElementById('post-title').value = '';
-            document.getElementById('post-content').value = '';
-            document.getElementById('post-author').disabled = false;
-            document.getElementById('post-password').value = '';
-            document.getElementById('attachment-field').style.display = 'block';
-            document.getElementById('post-submit-btn').innerText = "Post";
+            // Only reset if requested or if we are not already in the middle of something
+            const currentId = document.getElementById('edit-post-id').value;
+            if (forceReset || (!currentId && !document.getElementById('post-title').value && !document.getElementById('post-content').value)) {
+                document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
+                document.getElementById('edit-post-id').value = '';
+                document.getElementById('post-title').value = '';
+                document.getElementById('post-content').value = '';
+                document.getElementById('post-author').disabled = false;
+                document.getElementById('post-password').value = '';
+                document.getElementById('attachment-field').style.display = 'block';
+                document.getElementById('post-submit-btn').innerText = "Post";
+                
+                // Auto fill author if known
+                if (app.user !== 'Guest') {
+                    document.getElementById('post-author').value = app.user;
+                }
+            }
 
             form.style.display = 'block';
             document.getElementById('create-post-sub-name').innerText = app.currentSub;
-            // Auto fill author if known
-            if (app.user !== 'Guest') {
-                document.getElementById('post-author').value = app.user;
-            }
+            window.scrollTo(0, 0); // Scroll to top to see the form
         }
     },
 
@@ -316,9 +323,13 @@ const app = {
         const title = document.getElementById('post-title').value;
         const content = document.getElementById('post-content').value;
         const author = document.getElementById('post-author').value || 'Anonymous';
-        const password = document.getElementById('post-password').value;
+        let password = document.getElementById('post-password').value;
         
-        if (!password) return alert("Password is required for post management.");
+        if (!password) {
+            password = await app.requestPassword("Password Required", "Set a password to manage (edit/delete) this post later:");
+            if (!password) return;
+            document.getElementById('post-password').value = password;
+        }
 
         if (editId) {
             // Update Existing Post
