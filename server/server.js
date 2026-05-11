@@ -257,6 +257,21 @@ app.post('/api/comments', (req, res) => {
         });
 });
 
+// 6.1 Delete comment (Admin only)
+app.delete('/api/comments/:id', (req, res) => {
+    const commentId = req.params.id;
+    const { adminPassword } = req.body;
+
+    if (adminPassword !== 'admin123') {
+        return res.status(403).json({ error: "Admin access required" });
+    }
+
+    db.run("DELETE FROM comments WHERE id = ?", [commentId], function (err) {
+        if (err) return res.status(500).json({ error: err.message });
+        res.json({ message: "Comment deleted successfully" });
+    });
+});
+
 // 7. Delete post (with password check)
 app.delete('/api/posts/:id', (req, res) => {
     const postId = req.params.id;
@@ -343,7 +358,7 @@ app.post('/api/export', (req, res) => {
         if (err) return res.status(500).json({ error: err.message });
 
         if (!rows || rows.length === 0) {
-            return res.json({ message: "내보낼 게시글이 없습니다.", count: 0 });
+            return res.json({ message: "No posts to export.", count: 0 });
         }
 
         let successCount = 0;
@@ -358,7 +373,7 @@ app.post('/api/export', (req, res) => {
             if (!safeTitle) safeTitle = `unnamed_post_${post.id}`;
             
             let safeDate = post.created_at ? post.created_at.substring(0, 10).replace(/[: ]/g, '-') : 'unknown-date';
-            let safeAuthor = post.author ? post.author.replace(/[\/\?<>\\:\*\|"]/g, '_') : '알수없음';
+            let safeAuthor = post.author ? post.author.replace(/[\/\?<>\\:\*\|"]/g, '_') : 'unknown';
             
             const fileName = `${safeTitle}_${safeDate}_${safeAuthor}.md`;
             const filePath = path.join(subDir, fileName);
@@ -379,12 +394,12 @@ ${post.content || ''}
                 fs.writeFileSync(filePath, mdContent, 'utf-8');
                 successCount++;
             } catch (fileErr) {
-                console.error(`파일 저장 실패 (${fileName}):`, fileErr.message);
+                console.error(`File save failed (${fileName}):`, fileErr.message);
             }
         });
 
         res.json({ 
-            message: `성공적으로 추출된 게시글 수: ${successCount} 개`, 
+            message: `Successfully exported: ${successCount} posts`, 
             count: successCount,
             path: exportDir
         });

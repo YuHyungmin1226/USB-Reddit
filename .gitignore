@@ -38,3 +38,6 @@ Thumbs.db
 # Local cache
 .npm-cache/
 .tmp_bin/
+node_modules_mac/
+bin/*.zip
+._*

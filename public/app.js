@@ -438,8 +438,17 @@ const app = {
             json.comments.forEach(c => {
                 const div = document.createElement('div');
                 div.className = 'comment';
+                
+                let deleteBtn = '';
+                if (app.isAdmin) {
+                    deleteBtn = `<button onclick="app.deleteComment(${c.id})" class="management-btn delete-btn" style="padding: 2px 8px; font-size: 0.7rem; margin-left: 10px;">Delete</button>`;
+                }
+
                 div.innerHTML = `
-                    <div class="meta">${c.author} • ${new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString()}</div>
+                    <div class="meta">
+                        ${c.author} • ${new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString()}
+                        ${deleteBtn}
+                    </div>
                     <div>${app.parseMarkdown(c.content)}</div>
                 `;
                 commentsDiv.appendChild(div);
@@ -471,6 +480,28 @@ const app = {
             app.viewPost(app.currentPostId); // Reload
         } catch (err) {
             alert("Failed to comment");
+        }
+    },
+
+    deleteComment: async (id) => {
+        if (!confirm("Are you sure you want to delete this comment?")) return;
+
+        try {
+            const res = await fetch(`${API_URL}/comments/${id}`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ adminPassword: 'admin123' })
+            });
+
+            if (res.ok) {
+                app.viewPost(app.currentPostId); // Reload
+            } else {
+                const json = await res.json();
+                alert("Failed to delete comment: " + (json.error || "Unknown error"));
+            }
+        } catch (err) {
+            alert("Error deleting comment");
+            console.error(err);
         }
     },
 
@@ -533,7 +564,7 @@ const app = {
 
     editPost: async (post) => {
         // We need the password to open edit mode? Or just open it and check on submit.
-        // User's request: "누르면 해당 글의 비밀번호를 물어봐서 진행하는 방식"
+        // Ask for post password before proceeding to edit
         const password = await app.requestPassword("Edit Post", "Enter post password to edit:");
         if (!password) return;
 
@@ -555,7 +586,7 @@ const app = {
     },
 
     exportAllToMd: async () => {
-        if (!confirm("모든 게시글을 .md 파일로 일괄 추출하시겠습니까?\n(서버의 exports 폴더에 저장됩니다.)")) return;
+        if (!confirm("Export all posts to .md files?\n(Files will be saved in the server's exports folder.)")) return;
 
         try {
             const res = await fetch(`${API_URL}/export`, {
@@ -566,12 +597,12 @@ const app = {
             const json = await res.json();
             
             if (res.ok) {
-                alert(`✅ 추출 완료!\n${json.message}\n저장 위치: ${json.path}`);
+                alert(`✅ Export Complete!\n${json.message}\nPath: ${json.path}`);
             } else {
-                alert("❌ 추출 실패: " + (json.error || "알 수 없는 오류"));
+                alert("❌ Export Failed: " + (json.error || "Unknown error"));
             }
         } catch (err) {
-            alert("❌ 서버 연결 오류");
+            alert("❌ Server Connection Error");
             console.error(err);
         }
     },

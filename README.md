@@ -1,35 +1,31 @@
 # USB-Reddit
+A portable Reddit clone that runs directly from a USB drive or portable storage. Designed for immediate execution on macOS and Windows without additional setup.
 
-USB 드라이브나 휴대용 저장 장치에서 바로 실행 가능한 포터블 레딧 클론 프로젝트입니다. 별도의 환경 설정 없이 macOS와 Windows에서 즉시 실행할 수 있도록 설계되었습니다.
+## Key Features
+- **Fully Portable**: No need to install Node.js on the system. Uses built-in binaries in the `bin/` folder.
+- **Easy Execution**: Simply run `start.bat` on Windows or `start_mac.command` on macOS.
+- **Local Database**: Uses SQLite to keep all posts and data safe in the `data/` folder.
+- **Offline Friendly**: Once libraries are set up, it runs without an internet connection.
 
-## 주요 특징
-
-- **완전 포터블**: 시스템에 Node.js를 설치할 필요가 없습니다. `bin/` 폴더의 내장 바이너리를 사용합니다.
-- **간편한 실행**: macOS에서는 `start_mac.command`, Windows에서는 `start.bat`을 실행하기만 하면 됩니다.
-- **로컬 데이터베이스**: SQLite를 사용하여 모든 게시글과 데이터를 프로젝트 폴더 내 `data/`에 안전하게 보관합니다.
-- **오프라인 친화적**: 첫 실행 시 라이브러리 설치가 완료되면, 이후에는 인터넷 연결 없이도 로컬 서버를 구동할 수 있습니다.
-
-## 실행 방법
-
-### macOS
-1. 이 폴더를 원하는 곳(USB 등)으로 복사합니다.
-2. `start_mac.command` 파일을 더블 클릭하여 실행합니다.
-3. 터미널 창이 열리고 서버가 시작되면 브라우저에서 `http://localhost:3000`으로 접속합니다.
+## How to Run
 
 ### Windows
-1. 이 폴더를 원하는 곳으로 복사합니다.
-2. `start.bat` 파일을 실행합니다.
-3. 브라우저에서 `http://localhost:3000`으로 접속합니다.
+1. Copy this folder to your desired location (e.g., USB drive).
+2. Run `start.bat`.
+3. Open `http://localhost:3000` in your browser.
 
-## 프로젝트 구조
+### macOS
+1. Copy this folder to your desired location.
+2. Double-click `start_mac.command`.
+3. Open `http://localhost:3000` in your browser.
 
-- `public/`: 프론트엔드 HTML, CSS, JavaScript 파일
-- `server/`: Node.js 서버 로직 및 의존성 체크 스크립트
-- `bin/`: macOS용 포터블 Node.js 바이너리 압축 파일
-- `data/`: SQLite 데이터베이스 파일이 저장되는 곳 (실행 시 생성됨)
-- `exports/`: 게시글 내보내기 기능 사용 시 파일이 저장되는 곳
+## Project Structure
+- `public/`: Frontend HTML, CSS, and JavaScript files.
+- `server/`: Node.js server logic and dependency check scripts.
+- `bin/`: Portable Node.js binaries.
+- `data/`: SQLite database storage (created on first run).
+- `exports/`: Destination for exported Markdown files.
 
-## 주의 사항
-
-- 프로젝트 폴더를 이동해도 데이터는 유지되지만, `data/` 폴더를 삭제하면 모든 게시글 데이터가 초기화됩니다.
-- 첫 실행 시에는 라이브러리(node_modules) 설치를 위해 인터넷 연결이 필요할 수 있습니다.
+## Notes
+- Deleting the `data/` folder will reset all post data.
+- Internet connection may be required on the very first run to install libraries if they are missing.
