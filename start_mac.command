@@ -58,9 +58,18 @@ fi
 
 echo -e "${GREEN}[Info] Node.js version: $(node -v)${NC}"
 
-# 2. Check Dependencies
+# 2. Check Dependencies & OS Swap
+if [ -f "node_modules/.os_win" ]; then
+    echo -e "${YELLOW}[Info] Windows node_modules detected. Swapping to Mac...${NC}"
+    mv node_modules node_modules_win
+fi
+
+if [ -d "node_modules_mac" ]; then
+    mv node_modules_mac node_modules
+fi
+
 if [ ! -d "node_modules" ]; then
-    echo -e "${YELLOW}[Info] node_modules not found. Installing dependencies...${NC}"
+    echo -e "${YELLOW}[Info] node_modules not found. Installing dependencies for Mac...${NC}"
     npm install --no-audit --no-fund
     if [ $? -ne 0 ]; then
         echo -e "${RED}[Error] npm install failed.${NC}"
@@ -68,6 +77,7 @@ if [ ! -d "node_modules" ]; then
         read -n 1
         exit 1
     fi
+    touch node_modules/.os_mac
 else
     echo -e "${GREEN}[Info] Checking dependencies (sqlite3 check)...${NC}"
     node server/check_deps.js
@@ -81,6 +91,7 @@ else
              exit 1
         fi
     fi
+    touch node_modules/.os_mac
 fi
 
 # 3. Ensure necessary directories exist

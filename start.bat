@@ -51,20 +51,38 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: 2. Check Dependencies
+:: 2. Check Dependencies & OS Swap
+:: Check if current node_modules belongs to Mac
+if exist "node_modules\.os_mac" (
+    echo [Info] Mac node_modules detected. Swapping to Windows...
+    ren node_modules node_modules_mac
+)
+
+:: If Windows node_modules exists, rename it to active
+if exist "node_modules_win" (
+    ren node_modules_win node_modules
+)
+
 if not exist "node_modules" goto :INSTALL_DEPS
 
 echo [Info] Checking dependencies (sqlite3 check)...
 node server/check_deps.js
 if !ERRORLEVEL! NEQ 0 goto :REINSTALL_DEPS
+
+:: Ensure .os_win marker exists
+if not exist "node_modules\.os_win" (
+    echo win > "node_modules\.os_win"
+)
 goto :RUN_SERVER
 
 :INSTALL_DEPS
-echo [Info] Installing dependencies...
+echo [Info] Installing dependencies for Windows...
 where npm >nul 2>nul
 if !ERRORLEVEL! NEQ 0 goto :NPM_NOT_FOUND
 call npm install --no-audit --no-fund
 if !ERRORLEVEL! NEQ 0 goto :INSTALL_FAILED
+:: Create marker file for Windows
+echo win > "node_modules\.os_win"
 goto :RUN_SERVER
 
 :REINSTALL_DEPS
