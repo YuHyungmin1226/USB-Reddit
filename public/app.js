@@ -134,7 +134,6 @@ const app = {
             const res = await fetch(`${API_URL}/subreddits`);
             const json = await res.json();
             const nav = document.getElementById('sub-nav');
-            // Keep 'All' or 'Random' logic if needed, for now just list subs
             nav.innerHTML = '';
 
             json.data.forEach(sub => {
@@ -261,10 +260,11 @@ const app = {
                 card.onclick = () => app.viewPost(post.id);
 
                 const date = new Date(post.created_at.replace(' ', 'T') + 'Z').toLocaleDateString();
+                const displaySub = post.subreddit_name || subreddit;
 
                 card.innerHTML = `
                     <div class="post-meta">
-                        <span class="subreddit-tag">r/${subreddit}</span> • Posted by ${post.author} • ${date}
+                        <span class="subreddit-tag">r/${displaySub}</span> • Posted by ${post.author} • ${date}
                     </div>
                     <h2 class="post-title">${post.title}</h2>
                     <div class="post-actions">
@@ -376,7 +376,8 @@ const app = {
                     app.toggleCreateForm();
                     app.loadPosts();
                 } else {
-                    alert("Failed to post.");
+                    const json = await res.json();
+                    alert("Failed to post: " + (json.error || "Unknown error"));
                 }
             } catch (err) {
                 alert("Error posting.");
