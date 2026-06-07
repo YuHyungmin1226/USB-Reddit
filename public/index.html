@@ -6,9 +6,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>USB Reddit</title>
     <link rel="stylesheet" href="style.css">
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 </head>
 
 <body>
@@ -39,8 +36,13 @@
             <h3 id="form-title">Create Post in r/<span id="create-post-sub-name"></span></h3>
             <input type="hidden" id="edit-post-id">
             <input type="text" id="post-title" placeholder="Title">
+            <div style="display:flex; gap:4px; margin-bottom:4px;">
+                <button id="edit-tab" class="editor-tab active" onclick="app.switchEditorTab('edit')" type="button">Edit</button>
+                <button id="preview-tab" class="editor-tab" onclick="app.switchEditorTab('preview')" type="button">Preview</button>
+            </div>
             <textarea id="post-content" rows="6"
                 placeholder="Content (Markdown supported: **bold**, *italic*)"></textarea>
+            <div id="post-preview" class="editor-preview" style="display:none;"></div>
             <div id="attachment-field" style="margin-bottom: 12px; color: #ccc; font-size: 0.9rem;">
                 <label for="post-file" style="display:block; margin-bottom:5px;">Attach Image/Video (Optional):</label>
                 <input type="file" id="post-file" accept="image/*,video/*" style="padding: 5px;">
@@ -70,6 +72,10 @@
             <div class="comment-section">
                 <h4>Comments</h4>
                 <div id="comment-form" style="margin-bottom: 20px;">
+                    <div id="reply-indicator" style="display:none; font-size:0.85rem; color:var(--accent-color); margin-bottom:8px;">
+                        Replying to <span id="reply-target"></span>
+                        <span style="cursor:pointer; margin-left:8px;" onclick="app.cancelReply()">[cancel]</span>
+                    </div>
                     <textarea id="comment-content" rows="3" placeholder="Write a comment..."
                         style="width: 100%;"></textarea>
                     <input type="text" id="comment-author" placeholder="Nickname"
@@ -126,7 +132,9 @@
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <div class="toast-container" id="toast-container"></div>
+
+    <script src="lib/marked.min.js"></script>
     <script src="app.js"></script>
 </body>
 

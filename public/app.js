@@ -5,7 +5,24 @@ const app = {
     currentPostId: null,
     user: 'Guest',
     isAdmin: false,
+    adminPassword: null,
     passwordResolver: null,
+    currentPage: 1,
+    totalPages: 1,
+    adminEditFlag: false,
+
+    showToast: (message, type = 'info', duration = 3000) => {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        const toast = document.createElement('div');
+        toast.className = `toast toast-${type}`;
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => {
+            toast.classList.add('toast-out');
+            setTimeout(() => toast.remove(), 300);
+        }, duration);
+    },
 
     init: async () => {
         app.isAdmin = localStorage.getItem('isAdmin') === 'true';
@@ -68,6 +85,31 @@ const app = {
         if (app.user !== 'Guest') {
             document.getElementById('post-author').value = app.user;
         }
+        // Reset editor tabs
+        const editTab = document.getElementById('edit-tab');
+        const previewTab = document.getElementById('preview-tab');
+        if (editTab && previewTab) app.switchEditorTab('edit');
+    },
+
+    switchEditorTab: (tab) => {
+        const textarea = document.getElementById('post-content');
+        const preview = document.getElementById('post-preview');
+        const editTab = document.getElementById('edit-tab');
+        const previewTab = document.getElementById('preview-tab');
+        if (!textarea || !preview || !editTab || !previewTab) return;
+
+        if (tab === 'preview') {
+            editTab.classList.remove('active');
+            previewTab.classList.add('active');
+            textarea.style.display = 'none';
+            preview.style.display = 'block';
+            preview.innerHTML = app.parseMarkdown(textarea.value) || '<span style="color:var(--text-secondary);">Nothing to preview</span>';
+        } else {
+            previewTab.classList.remove('active');
+            editTab.classList.add('active');
+            preview.style.display = 'none';
+            textarea.style.display = 'block';
+        }
     },
 
     promptNickname: () => {
@@ -93,7 +135,7 @@ const app = {
         const username = document.getElementById('admin-username').value;
         const password = document.getElementById('admin-password').value;
 
-        if (!username || !password) return alert("Please enter both username and password.");
+        if (!username || !password) { app.showToast("Please enter both username and password.", 'error'); return; }
 
         try {
             const res = await fetch(`${API_URL}/login`, {
@@ -104,7 +146,7 @@ const app = {
             const json = await res.json();
             if (json.success) {
                 app.isAdmin = true;
-                localStorage.setItem('isAdmin', 'true');
+                app.adminPassword = password;
                 app.updateAdminUI();
                 app.closeLoginModal();
                 
@@ -113,12 +155,12 @@ const app = {
                     app.viewPost(app.currentPostId);
                 }
                 
-                alert("Logged in as admin.");
+                app.showToast("Logged in as admin.", 'success');
             } else {
-                alert("Login failed: " + (json.error || "Invalid credentials"));
+                app.showToast("Login failed: " + (json.error || "Invalid credentials"), 'error');
             }
         } catch (err) {
-            alert("Error during login");
+            app.showToast("Error during login", 'error');
         }
     },
 
@@ -132,7 +174,7 @@ const app = {
             app.viewPost(app.currentPostId);
         }
         
-        alert("Logged out.");
+            app.showToast("Logged out.", 'info');
     },
 
     updateAdminUI: () => {
@@ -213,8 +255,8 @@ const app = {
         const desc = document.getElementById('new-sub-desc').value;
         const password = document.getElementById('new-sub-password').value;
 
-        if (!name) return alert("Subreddit name is required.");
-        if (!password) return alert("Password is required.");
+        if (!name) { app.showToast("Subreddit name is required.", 'error'); return; }
+        if (!password) { app.showToast("Password is required.", 'error'); return; }
 
         try {
             const res = await fetch(`${API_URL}/subreddits`, {
@@ -227,29 +269,62 @@ const app = {
                 app.loadSubreddits();
                 app.switchSub(name);
             } else {
-                alert("Failed to create subreddit. Name might be taken.");
+                app.showToast("Failed to create subreddit. Name might be taken.", 'error');
             }
         } catch (err) {
-            alert("Error creating subreddit");
+            app.showToast("Error creating subreddit", 'error');
         }
     },
 
-    loadPosts: async (subreddit = app.currentSub) => {
+    vote: async (targetType, targetId, value) => {
+        try {
+            const res = await fetch(`${API_URL}/vote`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_type: targetType, target_id: targetId, value })
+            });
+            const json = await res.json();
+            if (json.success) {
+                const el = document.getElementById(`vote-count-${targetId}`);
+                if (el) el.textContent = json.total;
+                app.recordVote(targetId, value);
+                app.highlightVote(targetId, value);
+            }
+        } catch (err) {
+            console.error('Vote error:', err);
+        }
+    },
+
+    recordVote: (targetId, value) => {
+        let votes = {};
+        try { votes = JSON.parse(sessionStorage.getItem('myVotes') || '{}'); } catch(e) {}
+        votes[targetId] = value;
+        sessionStorage.setItem('myVotes', JSON.stringify(votes));
+    },
+
+    restoreVoteHighlights: () => {
+        let votes = {};
+        try { votes = JSON.parse(sessionStorage.getItem('myVotes') || '{}'); } catch(e) {}
+        Object.entries(votes).forEach(([id, value]) => {
+            app.highlightVote(parseInt(id), value);
+        });
+    },
+
+    highlightVote: (targetId, value) => {
+        document.querySelectorAll(`.vote-btn[onclick*="'post', ${targetId},"]`).forEach(el => {
+            el.style.opacity = el.textContent === (value > 0 ? '⬆' : '⬇') ? '1' : '0.5';
+        });
+    },
+
+    loadPosts: async (subreddit = app.currentSub, loadMore = false) => {
         const list = document.getElementById('post-list');
-        // Retrieve current sub ID for deletion logic? Using name for now, but delete requires ID.
-        // We might need to store sub ID in app.currentSubId or fetch it.
-        // For simplicity, let's fetch sub info or iterate subs to find ID.
-        let currentSubId = null;
-        if (subreddit !== 'all') {
-            // Find ID from nav (hacky but works for small list) or fetch. 
-            // Better: update loadSubreddits to store map, OR logic in server.
-            // Let's rely on server looking up by name? No, delete needs ID.
-            // Let's just find it from the DOM or cache.
+
+        if (!loadMore) {
+            app.currentPage = 1;
         }
 
         let headerHtml = '';
         if (subreddit !== 'all') {
-            // Add delete sub button to header (Except for default subs)
             let deleteBtn = '';
             if (subreddit !== 'general' && subreddit !== 'random') {
                 deleteBtn = `<button onclick="app.deleteCurrentSub()" style="background:transparent; color:#666; border:1px solid #ccc; padding:5px 10px; cursor:pointer; border-radius:4px; font-size: 0.8rem;">Delete</button>`;
@@ -261,30 +336,41 @@ const app = {
                     ${deleteBtn}
                 </div>
              `;
+
+            if (!loadMore) {
+                list.innerHTML = headerHtml + '<div style="text-align:center; padding:20px;">Loading...</div>';
+            }
+        } else if (!loadMore) {
+            list.innerHTML = '<div style="text-align:center; padding:20px;">Loading...</div>';
         }
 
-        list.innerHTML = headerHtml + '<div style="text-align:center; padding:20px;">Loading...</div>';
-
         try {
-            const res = await fetch(`${API_URL}/r/${subreddit}`);
+            const res = await fetch(`${API_URL}/r/${subreddit}?page=${app.currentPage}&limit=20`);
             const json = await res.json();
 
-            list.innerHTML = headerHtml; // Keep header
+            if (!loadMore) {
+                list.innerHTML = headerHtml || '';
+            }
 
-            // Store ID if available (server response for get posts doesn't give sub ID directly easily unless we change API)
-            // But we know the sub name.
-            // Let's Fetch /api/subreddits to find the ID corresponding to this name for deletion.
-            // Optimization: do this only on delete click.
+            app.totalPages = json.pagination?.totalPages || 1;
+
+            const oldBtn = document.getElementById('load-more-btn');
+            if (oldBtn) oldBtn.remove();
 
             if (!json.data || json.data.length === 0) {
-                list.innerHTML += '<div style="text-align:center; padding:20px; color:#666;">No posts here yet. Be the first!</div>';
+                if (!loadMore) {
+                    list.innerHTML += '<div style="text-align:center; padding:20px; color:#666;">No posts here yet. Be the first!</div>';
+                }
                 return;
             }
 
             json.data.forEach(post => {
                 const card = document.createElement('div');
                 card.className = 'post-card';
-                card.onclick = () => app.viewPost(post.id);
+                card.onclick = (e) => {
+                    if (e.target.closest('.vote-btn, .vote-count')) return;
+                    app.viewPost(post.id);
+                };
 
                 const date = new Date(post.created_at.replace(' ', 'T') + 'Z').toLocaleDateString();
                 const displaySub = post.subreddit_name || subreddit;
@@ -295,53 +381,75 @@ const app = {
                     </div>
                     <h2 class="post-title">${post.title}</h2>
                     <div class="post-actions">
-                        <span>${post.upvotes} upvotes</span>
-                        <span>0 comments</span>
+                        <span class="vote-btn" onclick="event.stopPropagation(); app.vote('post', ${post.id}, 1)" title="Upvote">⬆</span>
+                        <span class="vote-count" id="vote-count-${post.id}">${post.upvotes}</span>
+                        <span class="vote-btn" onclick="event.stopPropagation(); app.vote('post', ${post.id}, -1)" title="Downvote">⬇</span>
+                        <span>${post.comment_count ?? 0} comments</span>
                     </div>
                 `;
                 list.appendChild(card);
             });
+
+            if (app.currentPage < app.totalPages) {
+                const loadMore = document.createElement('div');
+                loadMore.id = 'load-more-btn';
+                loadMore.style.cssText = 'text-align:center; padding:20px;';
+                loadMore.innerHTML = `<button class="primary-btn" onclick="app.loadPosts('${subreddit}', true)">Load More</button>`;
+                list.appendChild(loadMore);
+            }
+
+            app.currentPage++;
+
+            app.restoreVoteHighlights();
         } catch (err) {
-            list.innerHTML = '<div style="color:red; text-align:center;">Failed to load posts. Is server running?</div>';
+            if (!loadMore) {
+                list.innerHTML = '<div style="color:red; text-align:center;">Failed to load posts. Is server running?</div>';
+            }
         }
     },
 
     deleteCurrentSub: async () => {
         if (app.currentSub === 'general') {
-            return alert("Cannot delete default subreddit.");
+            app.showToast("Cannot delete default subreddit.", 'error'); return;
         }
 
-        const password = await app.requestPassword(`Delete r/${app.currentSub}`, "This action cannot be undone.");
-        if (!password) return;
+        let password = null;
+        if (app.isAdmin) {
+            if (!confirm(`Permanently delete r/${app.currentSub} and ALL its posts?`)) return;
+        } else {
+            password = await app.requestPassword(`Delete r/${app.currentSub}`, "This action cannot be undone.");
+            if (!password) return;
+            if (!confirm(`Permanently delete r/${app.currentSub} and ALL its posts?`)) return;
+        }
 
-        if (!confirm(`Permanently delete r/${app.currentSub} and ALL its posts?`)) return;
-
-        // Need ID. Fetch all subs to find it.
         try {
             const res = await fetch(`${API_URL}/subreddits`);
             const json = await res.json();
             const sub = json.data.find(s => s.name === app.currentSub);
 
             if (sub) {
+                const body = app.isAdmin
+                    ? { adminPassword: app.adminPassword }
+                    : { password };
                 const delRes = await fetch(`${API_URL}/subreddits/${sub.id}`, {
                     method: 'DELETE',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ password })
+                    body: JSON.stringify(body)
                 });
 
                 if (delRes.ok) {
-                    alert("Subreddit deleted.");
+                    app.showToast("Subreddit deleted.", 'success');
                     app.currentSub = 'general';
                     app.loadSubreddits();
                     app.goHome();
                 } else {
                     const err = await delRes.json();
-                    alert("Failed: " + (err.error || "Unknown"));
+                    app.showToast("Failed: " + (err.error || "Unknown"), 'error');
                 }
             }
         } catch (e) {
             console.error(e);
-            alert("Error deleting.");
+            app.showToast("Error deleting.", 'error');
         }
     },
 
@@ -361,22 +469,26 @@ const app = {
         if (editId) {
             // Update Existing Post
             try {
+                const body = app.adminEditFlag
+                    ? { title, content, password, adminPassword: app.adminPassword }
+                    : { title, content, password };
+                app.adminEditFlag = false;
                 const res = await fetch(`${API_URL}/posts/${editId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ title, content, password })
+                    body: JSON.stringify(body)
                 });
 
                 if (res.ok) {
-                    alert("Post updated!");
+                    app.showToast("Post updated!", 'success');
                     app.resetPostForm();
                     app.goHome(); // This hides form and refreshes list
                 } else {
                     const json = await res.json();
-                    alert("Failed to update: " + (json.error || "Unknown error"));
+                    app.showToast("Failed to update: " + (json.error || "Unknown error"), 'error');
                 }
             } catch (err) {
-                alert("Error updating post.");
+                app.showToast("Error updating post.", 'error');
             }
         } else {
             // Create New Post
@@ -402,10 +514,10 @@ const app = {
                     app.goHome(); // Hide form and refresh list
                 } else {
                     const json = await res.json();
-                    alert("Failed to post: " + (json.error || "Unknown error"));
+                    app.showToast("Failed to post: " + (json.error || "Unknown error"), 'error');
                 }
             } catch (err) {
-                alert("Error posting.");
+                app.showToast("Error posting.", 'error');
             }
         }
     },
@@ -438,38 +550,78 @@ const app = {
                     ${app.parseMarkdown(p.content)}
                 </div>
                 <div class="post-actions">
-                    <span class="vote-btn">⬆ ${p.upvotes}</span>
+                    <span class="vote-btn" onclick="app.vote('post', ${p.id}, 1)" title="Upvote">⬆</span>
+                    <span class="vote-count" id="vote-count-${p.id}">${p.upvotes}</span>
+                    <span class="vote-btn" onclick="app.vote('post', ${p.id}, -1)" title="Downvote">⬇</span>
                     <span style="flex-grow:1"></span>
                     <button onclick="app.editPost(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="management-btn edit-btn">Edit</button>
                     <button onclick="app.deletePost(${p.id})" class="management-btn delete-btn">Delete</button>
                 </div>
             `;
 
-            // Comments
-            commentsDiv.innerHTML = '';
+            const commentTree = {};
+            const roots = [];
             json.comments.forEach(c => {
+                commentTree[c.id] = { ...c, children: [] };
+            });
+            json.comments.forEach(c => {
+                if (c.parent_id && commentTree[c.parent_id]) {
+                    commentTree[c.parent_id].children.push(commentTree[c.id]);
+                } else {
+                    roots.push(commentTree[c.id]);
+                }
+            });
+
+            const renderComment = (c, depth = 0) => {
                 const div = document.createElement('div');
                 div.className = 'comment';
+                div.style.marginLeft = `${depth * 24}px`;
+                div.style.borderLeft = depth > 0 ? '2px solid var(--border-color)' : '';
+                div.style.paddingLeft = depth > 0 ? '12px' : '';
                 
                 let deleteBtn = '';
                 if (app.isAdmin) {
-                    // Increased visibility for admin delete button
                     deleteBtn = `<button onclick="app.deleteComment(${c.id})" class="management-btn delete-btn" style="padding: 2px 8px; font-size: 0.75rem; margin-left: 12px; border-color: #ff4500 !important; color: #ff4500 !important;">Delete</button>`;
                 }
 
                 div.innerHTML = `
-                    <div class="meta" style="display: flex; align-items: center;">
+                    <div class="meta" style="display: flex; align-items: center; flex-wrap: wrap;">
                         <span>${c.author} • ${new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString()}</span>
                         ${deleteBtn}
+                        <button onclick="app.replyTo(${c.id}, '${c.author.replace(/'/g, "\\'")}')" style="background:transparent; border:none; color:var(--accent-color); cursor:pointer; font-size:0.8rem; margin-left:12px;">Reply</button>
                     </div>
                     <div style="margin-top: 8px;">${app.parseMarkdown(c.content)}</div>
                 `;
                 commentsDiv.appendChild(div);
-            });
+
+                c.children.forEach(child => renderComment(child, depth + 1));
+            };
+
+            commentsDiv.innerHTML = '';
+            roots.forEach(c => renderComment(c));
 
         } catch (err) {
             console.error(err);
         }
+    },
+
+    replyTarget: null,
+
+    replyTo: (commentId, author) => {
+        app.replyTarget = commentId;
+        const indicator = document.getElementById('reply-indicator');
+        const target = document.getElementById('reply-target');
+        if (indicator && target) {
+            target.textContent = author;
+            indicator.style.display = 'block';
+        }
+        document.getElementById('comment-content').focus();
+    },
+
+    cancelReply: () => {
+        app.replyTarget = null;
+        const indicator = document.getElementById('reply-indicator');
+        if (indicator) indicator.style.display = 'none';
     },
 
     submitComment: async () => {
@@ -485,14 +637,16 @@ const app = {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     post_id: app.currentPostId,
+                    parent_id: app.replyTarget,
                     content,
                     author
                 })
             });
+            app.cancelReply();
             document.getElementById('comment-content').value = '';
             app.viewPost(app.currentPostId); // Reload
         } catch (err) {
-            alert("Failed to comment");
+            app.showToast("Failed to comment", 'error');
         }
     },
 
@@ -503,17 +657,17 @@ const app = {
             const res = await fetch(`${API_URL}/comments/${id}`, {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ adminPassword: 'admin123' })
+                body: JSON.stringify({ adminPassword: app.adminPassword })
             });
 
             if (res.ok) {
                 app.viewPost(app.currentPostId); // Reload
             } else {
                 const json = await res.json();
-                alert("Failed to delete comment: " + (json.error || "Unknown error"));
+                app.showToast("Failed to delete comment: " + (json.error || "Unknown error"), 'error');
             }
         } catch (err) {
-            alert("Error deleting comment");
+            app.showToast("Error deleting comment", 'error');
             console.error(err);
         }
     },
@@ -550,50 +704,60 @@ const app = {
     },
 
     deletePost: async (id) => {
-        const password = await app.requestPassword("Delete Post", "Enter the password you set when creating this post.");
-        if (!password) return;
-
-        if (!confirm("Are you sure you want to delete this post?")) return;
+        let password = null;
+        if (app.isAdmin) {
+            if (!confirm("Are you sure you want to delete this post?")) return;
+        } else {
+            password = await app.requestPassword("Delete Post", "Enter the password you set when creating this post.");
+            if (!password) return;
+            if (!confirm("Are you sure you want to delete this post?")) return;
+        }
 
         try {
+            const body = app.isAdmin
+                ? { adminPassword: app.adminPassword }
+                : { password };
             const res = await fetch(`${API_URL}/posts/${id}`, {
                 method: 'DELETE',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ password })
+                body: JSON.stringify(body)
             });
 
             if (res.ok) {
-                alert("Post deleted.");
+                app.showToast("Post deleted.", 'success');
                 app.goHome();
             } else {
                 const json = await res.json();
-                alert("Failed to delete: " + (json.error || "Unknown error"));
+                app.showToast("Failed to delete: " + (json.error || "Unknown error"), 'error');
             }
         } catch (err) {
-            alert("Error deleting post.");
+            app.showToast("Error deleting post.", 'error');
             console.error(err);
         }
     },
 
     editPost: async (post) => {
-        // We need the password to open edit mode? Or just open it and check on submit.
-        // Ask for post password before proceeding to edit
-        const password = await app.requestPassword("Edit Post", "Enter post password to edit:");
-        if (!password) return;
+        let password = null;
+        let adminEdit = false;
+        if (app.isAdmin) {
+            adminEdit = true;
+        } else {
+            password = await app.requestPassword("Edit Post", "Enter post password to edit:");
+            if (!password) return;
+        }
 
-        // Populate form
         document.getElementById('form-title').innerText = "Edit Post";
-        // Ensure span is removed or handled if we are in Edit mode to avoid confusion, 
-        // but toggleCreateForm might look for it. Let's just set the text.
-        // To be safe, we'll just check existence in toggleCreateForm.
         document.getElementById('edit-post-id').value = post.id;
         document.getElementById('post-title').value = post.title;
         document.getElementById('post-content').value = post.content;
         document.getElementById('post-author').value = post.author;
-        document.getElementById('post-author').disabled = true; // Can't change author
-        document.getElementById('post-password').value = password;
-        document.getElementById('attachment-field').style.display = 'none'; // Can't change attachment for now
+        document.getElementById('post-author').disabled = true;
+        document.getElementById('post-password').value = password || '';
+        document.getElementById('attachment-field').style.display = 'none';
         document.getElementById('post-submit-btn').innerText = "Update Post";
+
+        // Store admin edit flag for submitPost to use
+        app.adminEditFlag = adminEdit;
 
         document.getElementById('create-post-form').style.display = 'block';
     },
@@ -605,17 +769,17 @@ const app = {
             const res = await fetch(`${API_URL}/export`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ adminPassword: 'admin123' }) // Hardcoded for now as per admin role
+                body: JSON.stringify({ adminPassword: app.adminPassword })
             });
             const json = await res.json();
             
             if (res.ok) {
-                alert(`✅ Export Complete!\n${json.message}\nPath: ${json.path}`);
+                app.showToast(`Export Complete! ${json.message}`, 'success', 5000);
             } else {
-                alert("❌ Export Failed: " + (json.error || "Unknown error"));
+                app.showToast("Export Failed: " + (json.error || "Unknown error"), 'error');
             }
         } catch (err) {
-            alert("❌ Server Connection Error");
+            app.showToast("Server Connection Error", 'error');
             console.error(err);
         }
     },
@@ -637,7 +801,7 @@ const app = {
 
     resolvePasswordPromise: () => {
         const password = document.getElementById('password-modal-input').value;
-        if (!password) return alert("Password is required.");
+        if (!password) { app.showToast("Password is required.", 'error'); return; }
         
         document.getElementById('password-modal').style.display = 'none';
         if (app.passwordResolver) {

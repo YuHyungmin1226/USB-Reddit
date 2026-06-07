@@ -6,6 +6,33 @@ const path = require('path');
 const ip = require('ip');
 const fs = require('fs');
 
+// Load config
+const configPath = path.join(__dirname, '../config.json');
+const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+
+const crypto = require('crypto');
+
+// Password hashing with Node.js built-in scrypt (no external deps)
+function hashPassword(password) {
+    const salt = crypto.randomBytes(16).toString('hex');
+    const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+    return `${salt}:${hash}`;
+}
+
+function verifyAndUpgrade(password, stored, updateFn) {
+    if (!stored || !stored.includes(':')) {
+        if (password === stored) {
+            if (updateFn) updateFn(hashPassword(password));
+            return true;
+        }
+        return false;
+    }
+    const [salt, key] = stored.split(':');
+    const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+    if (hash.length !== key.length) return false;
+    return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(key));
+}
+
 const app = express();
 const PORT = 3000;
 
@@ -26,6 +53,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
         console.error('Error opening database ' + dbPath + ': ' + err.message);
     } else {
         console.log('Connected to the SQLite database.');
+        db.run("PRAGMA foreign_keys = ON");
         initDb();
     }
 });
@@ -51,7 +79,7 @@ function initDb() {
             password TEXT,
             upvotes INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(subreddit_id) REFERENCES subreddits(id)
+            FOREIGN KEY(subreddit_id) REFERENCES subreddits(id) ON DELETE CASCADE
         )`);
 
         // Comments
@@ -62,17 +90,20 @@ function initDb() {
             content TEXT,
             author TEXT,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY(post_id) REFERENCES posts(id)
+            FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE
         )`);
 
-        // Votes
-        db.run(`CREATE TABLE IF NOT EXISTS votes (
-            id INTEGER PRIMARY KEY,
-            target_type TEXT, 
-            target_id INTEGER,
-            user_ip TEXT,
-            value INTEGER
+        // Votes (drop legacy table, recreate with unique constraint)
+        db.run(`DROP TABLE IF EXISTS votes`);
+        db.run(`CREATE TABLE votes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            target_type TEXT NOT NULL,
+            target_id INTEGER NOT NULL,
+            user_ip TEXT NOT NULL,
+            value INTEGER NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )`);
+        db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_votes_unique ON votes(target_type, target_id, user_ip)`);
 
         // Seed default subreddit if empty
         db.get("SELECT count(*) as count FROM subreddits", (err, row) => {
@@ -100,7 +131,8 @@ app.post('/api/subreddits', (req, res) => {
     const { name, description, password } = req.body;
     if (!name || !password) return res.status(400).json({ error: "Name and Password are required" });
 
-    db.run("INSERT INTO subreddits (name, description, password) VALUES (?, ?, ?)", [name, description, password], function (err) {
+    const hashedPwd = hashPassword(password);
+    db.run("INSERT INTO subreddits (name, description, password) VALUES (?, ?, ?)", [name, description, hashedPwd], function (err) {
         if (err) return res.status(500).json({ error: err.message });
         res.json({ id: this.lastID, name });
     });
@@ -109,57 +141,76 @@ app.post('/api/subreddits', (req, res) => {
 // 2.1 Delete subreddit
 app.delete('/api/subreddits/:id', (req, res) => {
     const subId = req.params.id;
-    const { password } = req.body;
+    const { password, adminPassword } = req.body;
+
+    // Admin can bypass subreddit password
+    if (adminPassword && adminPassword === config.admin.password) {
+        return deleteSubreddit(res);
+    }
 
     db.get("SELECT password FROM subreddits WHERE id = ?", [subId], (err, row) => {
         if (err || !row) return res.status(404).json({ error: "Subreddit not found" });
 
-        if (row.password !== password) {
+        if (!verifyAndUpgrade(password, row.password, (h) => db.run("UPDATE subreddits SET password = ? WHERE id = ?", [h, subId]))) {
             return res.status(403).json({ error: "Incorrect password" });
         }
 
-        // Cleanup: Delete posts (and their comments)
-        // 1. Find all posts
-        db.all("SELECT id FROM posts WHERE subreddit_id = ?", [subId], (err, posts) => {
-            if (err) console.error("Error finding posts to delete:", err);
+        deleteSubreddit(res);
+    });
 
-            // Delete comments for these posts
-            if (posts && posts.length > 0) {
-                const postIds = posts.map(p => p.id).join(',');
-                db.run(`DELETE FROM comments WHERE post_id IN (${postIds})`);
-            }
-
-            // Delete posts
-            db.run("DELETE FROM posts WHERE subreddit_id = ?", [subId], (e) => {
-                if (e) console.error(e);
-
-                // Finally delete subreddit
-                db.run("DELETE FROM subreddits WHERE id = ?", [subId], (err) => {
-                    if (err) return res.status(500).json({ error: err.message });
-                    res.json({ message: "Subreddit deleted" });
+    function deleteSubreddit(response) {
+        db.run("DELETE FROM votes WHERE target_type='post' AND target_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
+            if (e) console.error("Error deleting votes:", e);
+            db.run("DELETE FROM comments WHERE post_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
+                if (e) console.error("Error deleting comments:", e);
+                db.run("DELETE FROM posts WHERE subreddit_id = ?", [subId], (e) => {
+                    if (e) console.error("Error deleting posts:", e);
+                    db.run("DELETE FROM subreddits WHERE id = ?", [subId], (err) => {
+                        if (err) return response.status(500).json({ error: err.message });
+                        response.json({ message: "Subreddit deleted" });
+                    });
                 });
             });
         });
-    });
+    }
 });
 
 // 3. Get posts for a subreddit
 app.get('/api/r/:subreddit_name', (req, res) => {
     const subName = req.params.subreddit_name;
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+    const offset = (page - 1) * limit;
 
     db.get("SELECT id FROM subreddits WHERE name = ?", [subName], (err, sub) => {
         if (err || !sub) return res.status(404).json({ error: "Subreddit not found" });
 
-        const query = `
-            SELECT posts.*, subreddits.name as subreddit_name 
-            FROM posts 
-            LEFT JOIN subreddits ON posts.subreddit_id = subreddits.id 
-            WHERE posts.subreddit_id = ? 
-            ORDER BY posts.created_at DESC
-        `;
-        db.all(query, [sub.id], (err, rows) => {
+        const countQuery = `SELECT COUNT(*) as total FROM posts WHERE subreddit_id = ?`;
+        db.get(countQuery, [sub.id], (err, countRow) => {
             if (err) return res.status(500).json({ error: err.message });
-            res.json({ data: rows });
+
+            const query = `
+                SELECT posts.*, subreddits.name as subreddit_name,
+                    (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id) as comment_count,
+                    (SELECT COALESCE(SUM(value), 0) FROM votes WHERE target_type='post' AND target_id=posts.id) as upvotes
+                FROM posts 
+                LEFT JOIN subreddits ON posts.subreddit_id = subreddits.id 
+                WHERE posts.subreddit_id = ? 
+                ORDER BY posts.created_at DESC
+                LIMIT ? OFFSET ?
+            `;
+            db.all(query, [sub.id, limit, offset], (err, rows) => {
+                if (err) return res.status(500).json({ error: err.message });
+                res.json({
+                    data: rows,
+                    pagination: {
+                        page,
+                        limit,
+                        total: countRow.total,
+                        totalPages: Math.ceil(countRow.total / limit)
+                    }
+                });
+            });
         });
     });
 });
@@ -224,8 +275,9 @@ app.post('/api/r/:subreddit_name', upload.single('attachment'), (req, res) => {
     db.get("SELECT id FROM subreddits WHERE name = ?", [subName], (err, sub) => {
         if (err || !sub) return res.status(404).json({ error: "Subreddit not found" });
 
+        const hashedPwd = hashPassword(password);
         db.run("INSERT INTO posts (subreddit_id, title, content, author, password) VALUES (?, ?, ?, ?, ?)",
-            [sub.id, title, content, author, password], function (err) {
+            [sub.id, title, content, author, hashedPwd], function (err) {
                 if (err) return res.status(500).json({ error: err.message });
                 res.json({ id: this.lastID });
             });
@@ -235,13 +287,14 @@ app.post('/api/r/:subreddit_name', upload.single('attachment'), (req, res) => {
 // 5. Get single post with comments
 app.get('/api/posts/:id', (req, res) => {
     const postId = req.params.id;
-    db.get("SELECT * FROM posts WHERE id = ?", [postId], (err, post) => {
+    db.get(`SELECT posts.*,
+        (SELECT COALESCE(SUM(value), 0) FROM votes WHERE target_type='post' AND target_id=posts.id) as upvotes
+        FROM posts WHERE id = ?`, [postId], (err, post) => {
         if (err || !post) return res.status(404).json({ error: "Post not found" });
 
         db.all("SELECT * FROM comments WHERE post_id = ? ORDER BY created_at ASC", [postId], (err, comments) => {
             if (err) return res.status(500).json({ error: err.message });
 
-            // Build comment tree (simple list for now, UI can handle tree)
             res.json({ post, comments });
         });
     });
@@ -262,7 +315,7 @@ app.delete('/api/comments/:id', (req, res) => {
     const commentId = req.params.id;
     const { adminPassword } = req.body;
 
-    if (adminPassword !== 'admin123') {
+    if (adminPassword !== config.admin.password) {
         return res.status(403).json({ error: "Admin access required" });
     }
 
@@ -272,60 +325,102 @@ app.delete('/api/comments/:id', (req, res) => {
     });
 });
 
-// 7. Delete post (with password check)
+// 7. Delete post (with password check or admin bypass)
 app.delete('/api/posts/:id', (req, res) => {
     const postId = req.params.id;
-    const { password } = req.body;
+    const { password, adminPassword } = req.body;
 
-    db.get("SELECT password FROM posts WHERE id = ?", [postId], (err, row) => {
-        if (err || !row) return res.status(404).json({ error: "Post not found" });
-
-        // Simple string comparison for portable/demo version.
-        // In production, use bcrypt.compare()
-        if (row.password !== password) {
-            return res.status(403).json({ error: "Incorrect password" });
-        }
-
-        // Delete comments first (cleanup)
-        db.run("DELETE FROM comments WHERE post_id = ?", [postId], (err) => {
-            if (err) console.error("Error deleting comments:", err);
-
-            // Delete post
-            db.run("DELETE FROM posts WHERE id = ?", [postId], (err) => {
-                if (err) return res.status(500).json({ error: err.message });
-                res.json({ message: "Deleted successfully" });
-            });
-        });
-    });
-});
-
-// 7.1 Update post (with password check)
-app.put('/api/posts/:id', (req, res) => {
-    const postId = req.params.id;
-    const { title, content, password } = req.body;
-
-    if (!password) {
-        return res.status(400).json({ error: "Password is required" });
+    // Admin can bypass post password
+    if (adminPassword && adminPassword === config.admin.password) {
+        return deletePost(postId, res);
     }
 
     db.get("SELECT password FROM posts WHERE id = ?", [postId], (err, row) => {
         if (err || !row) return res.status(404).json({ error: "Post not found" });
 
-        if (row.password !== password) {
+        if (!verifyAndUpgrade(password, row.password, (h) => db.run("UPDATE posts SET password = ? WHERE id = ?", [h, postId]))) {
             return res.status(403).json({ error: "Incorrect password" });
         }
 
+        deletePost(postId, res);
+    });
+
+    function deletePost(id, response) {
+        db.run("DELETE FROM comments WHERE post_id = ?", [id], (err) => {
+            if (err) console.error("Error deleting comments:", err);
+            db.run("DELETE FROM votes WHERE target_type='post' AND target_id=?", [id], (err) => {
+                if (err) console.error("Error deleting votes:", err);
+                db.run("DELETE FROM posts WHERE id = ?", [id], (err) => {
+                    if (err) return response.status(500).json({ error: err.message });
+                    response.json({ message: "Deleted successfully" });
+                });
+            });
+        });
+    }
+});
+
+// 7.1 Update post (with password check or admin bypass)
+app.put('/api/posts/:id', (req, res) => {
+    const postId = req.params.id;
+    const { title, content, password, adminPassword } = req.body;
+
+    // Admin can bypass post password
+    const isAdmin = adminPassword && adminPassword === config.admin.password;
+
+    if (!password && !isAdmin) {
+        return res.status(400).json({ error: "Password is required" });
+    }
+
+    if (isAdmin) {
+        return updatePost();
+    }
+
+    db.get("SELECT password FROM posts WHERE id = ?", [postId], (err, row) => {
+        if (err || !row) return res.status(404).json({ error: "Post not found" });
+
+        if (!verifyAndUpgrade(password, row.password, (h) => db.run("UPDATE posts SET password = ? WHERE id = ?", [h, postId]))) {
+            return res.status(403).json({ error: "Incorrect password" });
+        }
+
+        updatePost();
+    });
+
+    function updatePost() {
         db.run("UPDATE posts SET title = ?, content = ? WHERE id = ?", [title, content, postId], function (err) {
             if (err) return res.status(500).json({ error: err.message });
             res.json({ message: "Updated successfully" });
         });
-    });
+    }
 });
 
-// 7.2 Admin Login
+// 7.2 Vote (upvote/downvote)
+app.post('/api/vote', (req, res) => {
+    const { target_type, target_id, value } = req.body;
+    if (!target_type || !target_id || ![1, -1, 0].includes(value)) {
+        return res.status(400).json({ error: "target_type, target_id, and value (1|-1|0) required" });
+    }
+    if (!['post', 'comment'].includes(target_type)) {
+        return res.status(400).json({ error: "target_type must be 'post' or 'comment'" });
+    }
+    const userIp = req.ip || req.connection.remoteAddress;
+
+    db.run(`INSERT INTO votes (target_type, target_id, user_ip, value) VALUES (?, ?, ?, ?)
+            ON CONFLICT(target_type, target_id, user_ip) DO UPDATE SET value = excluded.value`,
+        [target_type, target_id, userIp, value], function (err) {
+            if (err) return res.status(500).json({ error: err.message });
+
+            db.get("SELECT COALESCE(SUM(value), 0) as total FROM votes WHERE target_type=? AND target_id=?",
+                [target_type, target_id], (err, row) => {
+                    if (err) return res.json({ success: true });
+                    res.json({ success: true, total: row.total });
+                });
+        });
+});
+
+// 7.3 Admin Login
 app.post('/api/login', (req, res) => {
     const { username, password } = req.body;
-    if (username === 'admin' && password === 'admin123') {
+    if (username === config.admin.username && password === config.admin.password) {
         res.json({ success: true, message: "Logged in as admin" });
     } else {
         res.status(401).json({ success: false, error: "Invalid credentials" });
@@ -336,7 +431,7 @@ app.post('/api/login', (req, res) => {
 app.post('/api/export', (req, res) => {
     // Basic protection (optional but good practice)
     const { adminPassword } = req.body;
-    if (adminPassword !== 'admin123') {
+    if (adminPassword !== config.admin.password) {
         return res.status(403).json({ error: "Admin access required" });
     }
 
