@@ -756,13 +756,14 @@ const app = {
         // Custom renderer to support video files in image syntax ![video](url)
         const renderer = new marked.Renderer();
         const originalImage = renderer.image.bind(renderer);
-        renderer.image = (href, title, text) => {
+        renderer.image = (token) => {
+            const { href, text } = token || {};
             if (!href) return '';
             const isVideo = href.match(/\.(mp4|webm|ogg|mov)$/i) || text === 'video';
             if (isVideo) {
                 return `<video controls src="${href}" style="max-width:100%; border-radius:4px; margin-top:10px;"></video>`;
             }
-            return originalImage(href, title, text);
+            return originalImage(token);
         };
 
         // Parse with marked
@@ -823,7 +824,7 @@ const app = {
     stripAttachmentFromContent: (content, fileUrl) => {
         if (!fileUrl) return content;
         const escaped = fileUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`\\n\\n(!\\[video\\]\\(${escaped}\\)|${escaped})\\s*$`);
+        const regex = new RegExp(`\\n\\n(!\\[(?:video|image)\\]\\(${escaped}\\)|${escaped})\\s*$`);
         return content.replace(regex, '');
     },
 
