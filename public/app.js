@@ -515,31 +515,78 @@ const app = {
         } else {
             // Create New Post
             const fileInput = document.getElementById('post-file');
+            const file = fileInput.files[0];
+            const submitBtn = document.getElementById('post-submit-btn');
+
             const formData = new FormData();
             formData.append('title', title);
             formData.append('content', content);
             formData.append('author', author);
             formData.append('password', password);
 
-            if (fileInput.files.length > 0) {
-                formData.append('attachment', fileInput.files[0]);
-            }
+            if (file) {
+                formData.append('attachment', file);
+                // Use XHR with progress tracking for file uploads
+                submitBtn.disabled = true;
+                document.getElementById('upload-filename').textContent = file.name;
+                document.getElementById('upload-progress-fill').style.width = '0%';
+                document.getElementById('upload-percent').textContent = '0%';
+                document.getElementById('upload-status').textContent = 'Uploading...';
+                document.getElementById('upload-overlay').style.display = 'flex';
 
-            try {
-                const res = await fetch(`${API_URL}/r/${app.currentSub}`, {
-                    method: 'POST',
-                    body: formData
-                });
+                try {
+                    const result = await new Promise((resolve, reject) => {
+                        const xhr = new XMLHttpRequest();
+                        xhr.upload.onprogress = (e) => {
+                            if (e.lengthComputable) {
+                                const percent = Math.round((e.loaded / e.total) * 100);
+                                document.getElementById('upload-progress-fill').style.width = percent + '%';
+                                document.getElementById('upload-percent').textContent = percent + '%';
+                            }
+                        };
+                        xhr.onload = () => {
+                            if (xhr.status >= 200 && xhr.status < 300) {
+                                resolve(JSON.parse(xhr.responseText));
+                            } else {
+                                try { reject(JSON.parse(xhr.responseText)); }
+                                catch { reject({ error: xhr.statusText || 'Upload failed' }); }
+                            }
+                        };
+                        xhr.onerror = () => reject({ error: 'Network error during upload' });
+                        xhr.ontimeout = () => reject({ error: 'Upload timed out' });
+                        xhr.open('POST', `${API_URL}/r/${app.currentSub}`);
+                        xhr.send(formData);
+                    });
 
-                if (res.ok) {
+                    document.getElementById('upload-overlay').style.display = 'none';
+                    submitBtn.disabled = false;
                     app.resetPostForm();
-                    app.goHome(); // Hide form and refresh list
-                } else {
-                    const json = await res.json();
-                    app.showToast("Failed to post: " + (json.error || "Unknown error"), 'error');
+                    app.goHome();
+                } catch (err) {
+                    document.getElementById('upload-status').textContent = 'Error: ' + (err.error || 'Upload failed');
+                    submitBtn.disabled = false;
+                    setTimeout(() => {
+                        document.getElementById('upload-overlay').style.display = 'none';
+                    }, 4000);
                 }
-            } catch (err) {
-                app.showToast("Error posting.", 'error');
+            } else {
+                // No file - use simple fetch
+                try {
+                    const res = await fetch(`${API_URL}/r/${app.currentSub}`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (res.ok) {
+                        app.resetPostForm();
+                        app.goHome();
+                    } else {
+                        const json = await res.json();
+                        app.showToast("Failed to post: " + (json.error || "Unknown error"), 'error');
+                    }
+                } catch (err) {
+                    app.showToast("Error posting.", 'error');
+                }
             }
         }
     },

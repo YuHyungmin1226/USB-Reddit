@@ -135,6 +135,18 @@
 
     <div class="toast-container" id="toast-container"></div>
 
+    <!-- Upload Progress Overlay -->
+    <div id="upload-overlay" class="upload-overlay" style="display:none;">
+        <div class="upload-modal">
+            <div class="upload-filename" id="upload-filename"></div>
+            <div class="upload-progress-track">
+                <div class="upload-progress-fill" id="upload-progress-fill"></div>
+            </div>
+            <div class="upload-percent" id="upload-percent">0%</div>
+            <div class="upload-status" id="upload-status">Uploading...</div>
+        </div>
+    </div>
+
     <script src="lib/marked.min.js"></script>
     <script src="app.js"></script>
 </body>
