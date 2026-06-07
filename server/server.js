@@ -78,9 +78,15 @@ function initDb() {
             author TEXT,
             password TEXT,
             upvotes INTEGER DEFAULT 0,
+            file_url TEXT DEFAULT NULL,
+            file_type TEXT DEFAULT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(subreddit_id) REFERENCES subreddits(id) ON DELETE CASCADE
         )`);
+
+        // Migrate existing posts: add file_url/file_type columns if missing
+        db.run("ALTER TABLE posts ADD COLUMN file_url TEXT DEFAULT NULL", () => {});
+        db.run("ALTER TABLE posts ADD COLUMN file_type TEXT DEFAULT NULL", () => {});
 
         // Comments
         db.run(`CREATE TABLE IF NOT EXISTS comments (
@@ -263,9 +269,8 @@ app.post('/api/r/:subreddit_name', upload.single('attachment'), (req, res) => {
     // Handle file attachment
     if (req.file) {
         const fileUrl = `/uploads/${req.file.filename}`;
-        const isVideo = req.file.mimetype.startsWith('video/');
-
-        if (isVideo) {
+        const fileType = req.file.mimetype;
+        if (fileType.startsWith('video/')) {
             content += `\n\n![video](${fileUrl})`;
         } else {
             content += `\n\n![image](${fileUrl})`;
@@ -276,10 +281,12 @@ app.post('/api/r/:subreddit_name', upload.single('attachment'), (req, res) => {
         if (err || !sub) return res.status(404).json({ error: "Subreddit not found" });
 
         const hashedPwd = hashPassword(password);
-        db.run("INSERT INTO posts (subreddit_id, title, content, author, password) VALUES (?, ?, ?, ?, ?)",
-            [sub.id, title, content, author, hashedPwd], function (err) {
+        const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
+        const fileType = req.file ? req.file.mimetype : null;
+        db.run("INSERT INTO posts (subreddit_id, title, content, author, password, file_url, file_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [sub.id, title, content, author, hashedPwd, fileUrl, fileType], function (err) {
                 if (err) return res.status(500).json({ error: err.message });
-                res.json({ id: this.lastID });
+                res.json({ id: this.lastID, file_url: fileUrl, file_type: fileType });
             });
     });
 });

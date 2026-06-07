@@ -85,10 +85,32 @@ const app = {
         if (app.user !== 'Guest') {
             document.getElementById('post-author').value = app.user;
         }
-        // Reset editor tabs
         const editTab = document.getElementById('edit-tab');
         const previewTab = document.getElementById('preview-tab');
         if (editTab && previewTab) app.switchEditorTab('edit');
+        const existingAttach = document.getElementById('existing-attachment');
+        if (existingAttach) existingAttach.remove();
+        const filePreview = document.getElementById('file-preview');
+        if (filePreview) filePreview.style.display = 'none';
+        const fileInput = document.getElementById('post-file');
+        if (fileInput) fileInput.value = '';
+    },
+
+    previewSelectedFile: (event) => {
+        const file = event.target.files[0];
+        const previewDiv = document.getElementById('file-preview');
+        if (!file || !previewDiv) return;
+        previewDiv.innerHTML = '';
+        previewDiv.style.display = 'block';
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            if (file.type.startsWith('video/')) {
+                previewDiv.innerHTML = `<video controls src="${e.target.result}" style="max-width:100%; max-height:200px; border-radius:4px;"></video>`;
+            } else {
+                previewDiv.innerHTML = `<img src="${e.target.result}" style="max-width:100%; max-height:200px; border-radius:4px;">`;
+            }
+        };
+        reader.readAsDataURL(file);
     },
 
     switchEditorTab: (tab) => {
@@ -547,8 +569,9 @@ const app = {
                 <div class="post-meta">r/${app.currentSub} • Posted by ${p.author} on ${date}</div>
                 <h1 style="color:white; margin: 10px 0;">${p.title}</h1>
                 <div style="font-size: 1.1rem; line-height: 1.6; margin-bottom: 20px;">
-                    ${app.parseMarkdown(p.content)}
+                    ${app.parseMarkdown(app.cleanContent(p.content, p.file_url))}
                 </div>
+                ${p.file_url ? app.renderAttachment(p.file_url, p.file_type) : ''}
                 <div class="post-actions">
                     <span class="vote-btn" onclick="app.vote('post', ${p.id}, 1)" title="Upvote">⬆</span>
                     <span class="vote-count" id="vote-count-${p.id}">${p.upvotes}</span>
@@ -687,7 +710,9 @@ const app = {
         const renderer = new marked.Renderer();
         const originalImage = renderer.image.bind(renderer);
         renderer.image = (href, title, text) => {
-            if (text === 'video' || href.match(/\.(mp4|webm|ogg)$/i)) {
+            if (!href) return '';
+            const isVideo = href.match(/\.(mp4|webm|ogg|mov)$/i) || text === 'video';
+            if (isVideo) {
                 return `<video controls src="${href}" style="max-width:100%; border-radius:4px; margin-top:10px;"></video>`;
             }
             return originalImage(href, title, text);
@@ -736,6 +761,25 @@ const app = {
         }
     },
 
+    cleanContent: (content, fileUrl) => {
+        return app.stripAttachmentFromContent(content || '', fileUrl);
+    },
+
+    renderAttachment: (fileUrl, fileType) => {
+        if (!fileUrl) return '';
+        if (fileType && fileType.startsWith('video/')) {
+            return `<video controls src="${fileUrl}" style="max-width:100%; border-radius:4px; margin-bottom:20px;"></video>`;
+        }
+        return `<img src="${fileUrl}" style="max-width:100%; border-radius:4px; margin-bottom:20px;" loading="lazy">`;
+    },
+
+    stripAttachmentFromContent: (content, fileUrl) => {
+        if (!fileUrl) return content;
+        const escaped = fileUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`\\n\\n(!\\[video\\]\\(${escaped}\\)|${escaped})\\s*$`);
+        return content.replace(regex, '');
+    },
+
     editPost: async (post) => {
         let password = null;
         let adminEdit = false;
@@ -749,14 +793,32 @@ const app = {
         document.getElementById('form-title').innerText = "Edit Post";
         document.getElementById('edit-post-id').value = post.id;
         document.getElementById('post-title').value = post.title;
-        document.getElementById('post-content').value = post.content;
+        const cleanContent = app.stripAttachmentFromContent(post.content, post.file_url);
+        document.getElementById('post-content').value = cleanContent;
         document.getElementById('post-author').value = post.author;
         document.getElementById('post-author').disabled = true;
         document.getElementById('post-password').value = password || '';
         document.getElementById('attachment-field').style.display = 'none';
         document.getElementById('post-submit-btn').innerText = "Update Post";
 
-        // Store admin edit flag for submitPost to use
+        const existingAttach = document.getElementById('existing-attachment');
+        if (post.file_url) {
+            if (!existingAttach) {
+                const info = document.createElement('div');
+                info.id = 'existing-attachment';
+                info.style.cssText = 'margin-bottom:12px; font-size:0.85rem; color:var(--text-secondary);';
+                document.getElementById('attachment-field').after(info);
+            }
+            const info = document.getElementById('existing-attachment');
+            if (post.file_type && post.file_type.startsWith('video/')) {
+                info.innerHTML = `Current attachment: <video controls src="${post.file_url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;"></video>`;
+            } else {
+                info.innerHTML = `Current attachment: <img src="${post.file_url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;">`;
+            }
+        } else if (existingAttach) {
+            existingAttach.remove();
+        }
+
         app.adminEditFlag = adminEdit;
 
         document.getElementById('create-post-form').style.display = 'block';
