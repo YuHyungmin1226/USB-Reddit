@@ -80,13 +80,14 @@ function initDb() {
             upvotes INTEGER DEFAULT 0,
             file_url TEXT DEFAULT NULL,
             file_type TEXT DEFAULT NULL,
+            attachments TEXT DEFAULT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(subreddit_id) REFERENCES subreddits(id) ON DELETE CASCADE
         )`);
 
-        // Migrate existing posts: add file_url/file_type columns if missing
         db.run("ALTER TABLE posts ADD COLUMN file_url TEXT DEFAULT NULL", () => {});
         db.run("ALTER TABLE posts ADD COLUMN file_type TEXT DEFAULT NULL", () => {});
+        db.run("ALTER TABLE posts ADD COLUMN attachments TEXT DEFAULT NULL", () => {});
 
         // Comments
         db.run(`CREATE TABLE IF NOT EXISTS comments (
@@ -120,6 +121,49 @@ function initDb() {
             }
         });
     });
+}
+
+function parseAttachments(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.filter(item => item && item.url);
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed.filter(item => item && item.url) : [];
+    } catch (err) {
+        return [];
+    }
+}
+
+function attachmentsForPost(post) {
+    const attachments = parseAttachments(post.attachments);
+    if (attachments.length > 0) return attachments;
+    if (post.file_url) {
+        return [{ url: post.file_url, type: post.file_type || '' }];
+    }
+    return [];
+}
+
+function normalizePost(post) {
+    if (!post) return post;
+    return {
+        ...post,
+        attachments: attachmentsForPost(post)
+    };
+}
+
+function attachmentMarkdown(attachment) {
+    const label = attachment.type && attachment.type.startsWith('video/') ? 'video' : 'image';
+    return `![${label}](${attachment.url})`;
+}
+
+function stripAttachmentMarkers(content, attachments) {
+    let result = content || '';
+    [...attachments].reverse().forEach((attachment) => {
+        const escaped = attachment.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`\\n\\n!\\[(?:video|image)\\]\\(${escaped}\\)\\s*$`);
+        result = result.replace(regex, '');
+    });
+    return result;
 }
 
 // API Routes
@@ -208,7 +252,7 @@ app.get('/api/r/:subreddit_name', (req, res) => {
             db.all(query, [sub.id, limit, offset], (err, rows) => {
                 if (err) return res.status(500).json({ error: err.message });
                 res.json({
-                    data: rows,
+                    data: rows.map(normalizePost),
                     pagination: {
                         page,
                         limit,
@@ -242,8 +286,8 @@ const upload = multer({ storage: storage });
 
 // ... existing code ...
 
-// 4. Create post (with optional file attachment)
-app.post('/api/r/:subreddit_name', upload.single('attachment'), (req, res) => {
+// 4. Create post (with optional file attachments)
+app.post('/api/r/:subreddit_name', upload.array('attachment'), (req, res) => {
     const subName = req.params.subreddit_name;
     
     let { title, content, author, password } = req.body;
@@ -266,27 +310,26 @@ app.post('/api/r/:subreddit_name', upload.single('attachment'), (req, res) => {
     // Ensure content is string (it might be undefined if empty form data)
     content = content || '';
 
-    // Handle file attachment
-    if (req.file) {
-        const fileUrl = `/uploads/${req.file.filename}`;
-        const fileType = req.file.mimetype;
-        if (fileType.startsWith('video/')) {
-            content += `\n\n![video](${fileUrl})`;
-        } else {
-            content += `\n\n![image](${fileUrl})`;
-        }
-    }
+    const attachments = (req.files || []).map(file => ({
+        url: `/uploads/${file.filename}`,
+        type: file.mimetype
+    }));
+    attachments.forEach((attachment) => {
+        content += `\n\n${attachmentMarkdown(attachment)}`;
+    });
 
     db.get("SELECT id FROM subreddits WHERE name = ?", [subName], (err, sub) => {
         if (err || !sub) return res.status(404).json({ error: "Subreddit not found" });
 
         const hashedPwd = hashPassword(password);
-        const fileUrl = req.file ? `/uploads/${req.file.filename}` : null;
-        const fileType = req.file ? req.file.mimetype : null;
-        db.run("INSERT INTO posts (subreddit_id, title, content, author, password, file_url, file_type) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [sub.id, title, content, author, hashedPwd, fileUrl, fileType], function (err) {
+        const firstAttachment = attachments[0] || null;
+        const fileUrl = firstAttachment ? firstAttachment.url : null;
+        const fileType = firstAttachment ? firstAttachment.type : null;
+        const attachmentsJson = attachments.length > 0 ? JSON.stringify(attachments) : null;
+        db.run("INSERT INTO posts (subreddit_id, title, content, author, password, file_url, file_type, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            [sub.id, title, content, author, hashedPwd, fileUrl, fileType, attachmentsJson], function (err) {
                 if (err) return res.status(500).json({ error: err.message });
-                res.json({ id: this.lastID, file_url: fileUrl, file_type: fileType });
+                res.json({ id: this.lastID, file_url: fileUrl, file_type: fileType, attachments });
             });
     });
 });
@@ -302,7 +345,7 @@ app.get('/api/posts/:id', (req, res) => {
         db.all("SELECT * FROM comments WHERE post_id = ? ORDER BY created_at ASC", [postId], (err, comments) => {
             if (err) return res.status(500).json({ error: err.message });
 
-            res.json({ post, comments });
+            res.json({ post: normalizePost(post), comments });
         });
     });
 });
@@ -451,6 +494,7 @@ app.post('/api/export', (req, res) => {
     const query = `
         SELECT 
             posts.id, posts.title, posts.content, posts.author, posts.created_at,
+            posts.file_url, posts.file_type, posts.attachments,
             subreddits.name as subreddit_name
         FROM posts 
         LEFT JOIN subreddits ON posts.subreddit_id = subreddits.id
@@ -480,6 +524,11 @@ app.post('/api/export', (req, res) => {
             const fileName = `${safeTitle}_${safeDate}_${safeAuthor}.md`;
             const filePath = path.join(subDir, fileName);
 
+            const normalizedPost = normalizePost(post);
+            const cleanContent = stripAttachmentMarkers(post.content || '', normalizedPost.attachments);
+            const attachmentBlock = normalizedPost.attachments.map(attachmentMarkdown).join('\n\n');
+            const bodyContent = attachmentBlock ? `${cleanContent}\n\n${attachmentBlock}` : cleanContent;
+
             const mdContent = `---
 title: "${post.title.replace(/"/g, '\\"')}"
 author: "${post.author}"
@@ -489,7 +538,7 @@ date: "${post.created_at}"
 
 # ${post.title}
 
-${post.content || ''}
+${bodyContent}
 `;
 
             try {

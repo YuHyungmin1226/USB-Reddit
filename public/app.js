@@ -97,20 +97,39 @@ const app = {
     },
 
     previewSelectedFile: (event) => {
-        const file = event.target.files[0];
+        const files = Array.from(event.target.files || []);
         const previewDiv = document.getElementById('file-preview');
-        if (!file || !previewDiv) return;
+        if (!previewDiv) return;
         previewDiv.innerHTML = '';
+        if (files.length === 0) {
+            previewDiv.style.display = 'none';
+            return;
+        }
         previewDiv.style.display = 'block';
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            if (file.type.startsWith('video/')) {
-                previewDiv.innerHTML = `<video controls src="${e.target.result}" style="max-width:100%; max-height:200px; border-radius:4px;"></video>`;
-            } else {
-                previewDiv.innerHTML = `<img src="${e.target.result}" style="max-width:100%; max-height:200px; border-radius:4px;">`;
-            }
-        };
-        reader.readAsDataURL(file);
+        files.forEach((file) => {
+            const item = document.createElement('div');
+            item.style.cssText = 'margin:8px 8px 8px 0; display:inline-block; vertical-align:top; max-width:200px;';
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const label = document.createElement('div');
+                label.style.cssText = 'font-size:0.75rem; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+                label.textContent = file.name;
+                let media;
+                if (file.type.startsWith('video/')) {
+                    media = document.createElement('video');
+                    media.controls = true;
+                } else {
+                    media = document.createElement('img');
+                }
+                media.src = e.target.result;
+                media.style.cssText = 'max-width:200px; max-height:160px; border-radius:4px;';
+                item.innerHTML = '';
+                item.appendChild(media);
+                item.appendChild(label);
+            };
+            reader.readAsDataURL(file);
+            previewDiv.appendChild(item);
+        });
     },
 
     switchEditorTab: (tab) => {
@@ -515,7 +534,7 @@ const app = {
         } else {
             // Create New Post
             const fileInput = document.getElementById('post-file');
-            const file = fileInput.files[0];
+            const files = Array.from(fileInput.files || []);
             const submitBtn = document.getElementById('post-submit-btn');
 
             const formData = new FormData();
@@ -524,11 +543,11 @@ const app = {
             formData.append('author', author);
             formData.append('password', password);
 
-            if (file) {
-                formData.append('attachment', file);
+            if (files.length > 0) {
+                files.forEach((file) => formData.append('attachment', file));
                 // Use XHR with progress tracking for file uploads
                 submitBtn.disabled = true;
-                document.getElementById('upload-filename').textContent = file.name;
+                document.getElementById('upload-filename').textContent = files.length === 1 ? files[0].name : `${files.length} files`;
                 document.getElementById('upload-progress-fill').style.width = '0%';
                 document.getElementById('upload-percent').textContent = '0%';
                 document.getElementById('upload-status').textContent = 'Uploading...';
@@ -610,15 +629,16 @@ const app = {
             }
 
             const p = json.post;
+            const attachments = app.getPostAttachments(p);
             const date = new Date(p.created_at.replace(' ', 'T') + 'Z').toLocaleString();
 
             contentDiv.innerHTML = `
                 <div class="post-meta">r/${app.currentSub} • Posted by ${p.author} on ${date}</div>
                 <h1 style="color:white; margin: 10px 0;">${p.title}</h1>
                 <div style="font-size: 1.1rem; line-height: 1.6; margin-bottom: 20px;">
-                    ${app.parseMarkdown(app.cleanContent(p.content, p.file_url))}
+                    ${app.parseMarkdown(app.cleanContent(p.content, attachments))}
                 </div>
-                ${p.file_url ? app.renderAttachment(p.file_url, p.file_type) : ''}
+                ${app.renderAttachments(attachments)}
                 <div class="post-actions">
                     <span class="vote-btn" onclick="app.vote('post', ${p.id}, 1)" title="Upvote">⬆</span>
                     <span class="vote-count" id="vote-count-${p.id}">${p.upvotes}</span>
@@ -809,8 +829,27 @@ const app = {
         }
     },
 
-    cleanContent: (content, fileUrl) => {
-        return app.stripAttachmentFromContent(content || '', fileUrl);
+    cleanContent: (content, attachments) => {
+        return app.stripAttachmentFromContent(content || '', attachments);
+    },
+
+    getPostAttachments: (post) => {
+        if (!post) return [];
+        if (Array.isArray(post.attachments)) {
+            return post.attachments.filter(item => item && item.url);
+        }
+        if (typeof post.attachments === 'string' && post.attachments.trim()) {
+            try {
+                const parsed = JSON.parse(post.attachments);
+                if (Array.isArray(parsed)) return parsed.filter(item => item && item.url);
+            } catch (err) {
+                console.warn('Invalid attachments metadata:', err);
+            }
+        }
+        if (post.file_url) {
+            return [{ url: post.file_url, type: post.file_type || '' }];
+        }
+        return [];
     },
 
     renderAttachment: (fileUrl, fileType) => {
@@ -821,11 +860,20 @@ const app = {
         return `<img src="${fileUrl}" style="max-width:100%; border-radius:4px; margin-bottom:20px;" loading="lazy">`;
     },
 
-    stripAttachmentFromContent: (content, fileUrl) => {
-        if (!fileUrl) return content;
-        const escaped = fileUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const regex = new RegExp(`\\n\\n(!\\[(?:video|image)\\]\\(${escaped}\\)|${escaped})\\s*$`);
-        return content.replace(regex, '');
+    renderAttachments: (attachments) => {
+        return (attachments || []).map(attachment => app.renderAttachment(attachment.url, attachment.type)).join('');
+    },
+
+    stripAttachmentFromContent: (content, attachments) => {
+        let result = content;
+        const list = Array.isArray(attachments) ? attachments : (attachments ? [{ url: attachments }] : []);
+        [...list].reverse().forEach((attachment) => {
+            if (!attachment || !attachment.url) return;
+            const escaped = attachment.url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const regex = new RegExp(`\\n\\n(!\\[(?:video|image)\\]\\(${escaped}\\)|${escaped})\\s*$`);
+            result = result.replace(regex, '');
+        });
+        return result;
     },
 
     editPost: async (post) => {
@@ -841,7 +889,8 @@ const app = {
         document.getElementById('form-title').innerText = "Edit Post";
         document.getElementById('edit-post-id').value = post.id;
         document.getElementById('post-title').value = post.title;
-        const cleanContent = app.stripAttachmentFromContent(post.content, post.file_url);
+        const attachments = app.getPostAttachments(post);
+        const cleanContent = app.stripAttachmentFromContent(post.content, attachments);
         document.getElementById('post-content').value = cleanContent;
         document.getElementById('post-author').value = post.author;
         document.getElementById('post-author').disabled = true;
@@ -850,7 +899,7 @@ const app = {
         document.getElementById('post-submit-btn').innerText = "Update Post";
 
         const existingAttach = document.getElementById('existing-attachment');
-        if (post.file_url) {
+        if (attachments.length > 0) {
             if (!existingAttach) {
                 const info = document.createElement('div');
                 info.id = 'existing-attachment';
@@ -858,11 +907,12 @@ const app = {
                 document.getElementById('attachment-field').after(info);
             }
             const info = document.getElementById('existing-attachment');
-            if (post.file_type && post.file_type.startsWith('video/')) {
-                info.innerHTML = `Current attachment: <video controls src="${post.file_url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;"></video>`;
-            } else {
-                info.innerHTML = `Current attachment: <img src="${post.file_url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;">`;
-            }
+            info.innerHTML = `Current attachments:<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${attachments.map((attachment) => {
+                if (attachment.type && attachment.type.startsWith('video/')) {
+                    return `<video controls src="${attachment.url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;"></video>`;
+                }
+                return `<img src="${attachment.url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;">`;
+            }).join('')}</div>`;
         } else if (existingAttach) {
             existingAttach.remove();
         }
