@@ -1,11 +1,12 @@
-# This project is a Node.js application. 
-# The primary dependency management is done via package.json.
-# Below are the main dependencies for reference:
+# USB-Reddit 프로젝트 의존성 참조
+# 본 프로젝트는 Node.js 애플리케이션입니다.
+# 주요 의존성 관리는 package.json을 통해 이루어집니다.
+# 아래는 참고용 주요 의존성 목록입니다:
 
-body-parser
-cors
-express
-ip
-markdown-it
-multer
-sqlite3
+body-parser     # HTTP 요청 본문 파싱
+cors            # 교차 출처 리소스 공유
+express         # 웹 서버 프레임워크
+ip              # IP 주소 감지
+markdown-it     # Markdown 렌더링
+multer          # 파일 업로드 처리
+sqlite3         # 데이터베이스
