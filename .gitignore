@@ -35,6 +35,9 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Local config (contains admin credentials) - copy from config.example.json
+config.json
+
 # Local cache
 .npm-cache/
 .tmp_bin/

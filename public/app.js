@@ -10,6 +10,7 @@ const app = {
     currentPage: 1,
     totalPages: 1,
     adminEditFlag: false,
+    loadPostsToken: 0,
 
     showToast: (message, type = 'info', duration = 3000) => {
         const container = document.getElementById('toast-container');
@@ -24,9 +25,125 @@ const app = {
         }, duration);
     },
 
+    // --- Security helpers ---
+
+    // Escape user-supplied text before it is interpolated raw into innerHTML templates.
+    escapeHtml: (s) => {
+        if (s === null || s === undefined) return '';
+        return String(s)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+    },
+
+    // Whitelist-based HTML sanitizer using the browser's built-in DOMParser.
+    // Removes dangerous tags, on* event handlers and unsafe URL schemes while
+    // preserving legitimate markdown output (images, links, intended YouTube iframes).
+    sanitizeHtml: (html) => {
+        if (!html) return '';
+
+        const DANGEROUS_TAGS = new Set([
+            'SCRIPT', 'STYLE', 'OBJECT', 'EMBED', 'LINK', 'META',
+            'BASE', 'FORM', 'INPUT', 'BUTTON', 'TEXTAREA', 'SELECT',
+            'APPLET', 'FRAME', 'FRAMESET', 'NOSCRIPT'
+        ]);
+
+        // Attributes that carry URLs and must have their scheme validated.
+        const URL_ATTRS = new Set(['href', 'src', 'xlink:href', 'action', 'formaction', 'poster', 'background']);
+
+        const isSafeUrl = (value, allowData) => {
+            if (!value) return true;
+            const trimmed = value.trim();
+            // Strip control/whitespace chars that can hide a scheme (e.g. "java\nscript:").
+            const normalized = trimmed.replace(/[\x00-\x20]/g, '').toLowerCase();
+            if (normalized.startsWith('javascript:') || normalized.startsWith('vbscript:')) return false;
+            if (normalized.startsWith('data:')) {
+                // Only allow image data URIs (and only where data is acceptable).
+                return allowData && /^data:image\//.test(normalized);
+            }
+            return true;
+        };
+
+        const isAllowedIframe = (src) => {
+            if (!src) return false;
+            try {
+                const url = new URL(src, window.location.href);
+                const host = url.hostname.toLowerCase();
+                return (
+                    host === 'www.youtube.com' ||
+                    host === 'youtube.com' ||
+                    host === 'www.youtube-nocookie.com' ||
+                    host === 'youtube-nocookie.com'
+                );
+            } catch (e) {
+                return false;
+            }
+        };
+
+        const doc = new DOMParser().parseFromString(html, 'text/html');
+
+        // Walk the tree; collect nodes to remove first to avoid mutating during traversal.
+        const toRemove = [];
+        const walk = (node) => {
+            const children = Array.from(node.childNodes);
+            for (const child of children) {
+                if (child.nodeType !== 1) continue; // only elements
+                const tag = child.tagName.toUpperCase();
+
+                if (DANGEROUS_TAGS.has(tag)) {
+                    toRemove.push(child);
+                    continue;
+                }
+
+                if (tag === 'IFRAME') {
+                    if (!isAllowedIframe(child.getAttribute('src'))) {
+                        toRemove.push(child);
+                        continue;
+                    }
+                }
+
+                // Clean attributes.
+                const isImg = tag === 'IMG';
+                for (const attr of Array.from(child.attributes)) {
+                    const name = attr.name.toLowerCase();
+                    if (name.startsWith('on')) {
+                        child.removeAttribute(attr.name);
+                        continue;
+                    }
+                    if (name === 'style') {
+                        // Drop styles that can execute (url()/expression()).
+                        if (/url\s*\(|expression\s*\(|javascript:/i.test(attr.value)) {
+                            child.removeAttribute(attr.name);
+                        }
+                        continue;
+                    }
+                    if (URL_ATTRS.has(name)) {
+                        if (!isSafeUrl(attr.value, isImg || tag === 'VIDEO' || tag === 'SOURCE')) {
+                            child.removeAttribute(attr.name);
+                        }
+                    }
+                }
+
+                walk(child);
+            }
+        };
+        walk(doc.body);
+        toRemove.forEach(n => n.remove());
+
+        return doc.body.innerHTML;
+    },
+
     init: async () => {
+        // isAdmin is persisted, but adminPassword is intentionally NOT stored in
+        // localStorage for security. If a prior session was admin, restore the UI
+        // flag and prompt the user to re-login so admin actions have a password.
         app.isAdmin = localStorage.getItem('isAdmin') === 'true';
         app.updateAdminUI();
+        if (app.isAdmin && !app.adminPassword) {
+            app.showToast("Admin session restored. Please re-login to perform admin actions.", 'info', 5000);
+        }
         await app.loadSubreddits();
         app.loadPosts();
     },
@@ -90,16 +207,32 @@ const app = {
         if (editTab && previewTab) app.switchEditorTab('edit');
         const existingAttach = document.getElementById('existing-attachment');
         if (existingAttach) existingAttach.remove();
+        app.revokePreviewUrls();
         const filePreview = document.getElementById('file-preview');
-        if (filePreview) filePreview.style.display = 'none';
+        if (filePreview) {
+            filePreview.innerHTML = '';
+            filePreview.style.display = 'none';
+        }
         const fileInput = document.getElementById('post-file');
         if (fileInput) fileInput.value = '';
+    },
+
+    // Object URLs created for the current file preview, kept so they can be revoked.
+    previewObjectUrls: [],
+
+    revokePreviewUrls: () => {
+        (app.previewObjectUrls || []).forEach((url) => {
+            try { URL.revokeObjectURL(url); } catch (e) {}
+        });
+        app.previewObjectUrls = [];
     },
 
     previewSelectedFile: (event) => {
         const files = Array.from(event.target.files || []);
         const previewDiv = document.getElementById('file-preview');
         if (!previewDiv) return;
+        // Release any URLs from a previous selection before creating new ones.
+        app.revokePreviewUrls();
         previewDiv.innerHTML = '';
         if (files.length === 0) {
             previewDiv.style.display = 'none';
@@ -109,25 +242,26 @@ const app = {
         files.forEach((file) => {
             const item = document.createElement('div');
             item.style.cssText = 'margin:8px 8px 8px 0; display:inline-block; vertical-align:top; max-width:200px;';
-            const reader = new FileReader();
-            reader.onload = (e) => {
-                const label = document.createElement('div');
-                label.style.cssText = 'font-size:0.75rem; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
-                label.textContent = file.name;
-                let media;
-                if (file.type.startsWith('video/')) {
-                    media = document.createElement('video');
-                    media.controls = true;
-                } else {
-                    media = document.createElement('img');
-                }
-                media.src = e.target.result;
-                media.style.cssText = 'max-width:200px; max-height:160px; border-radius:4px;';
-                item.innerHTML = '';
-                item.appendChild(media);
-                item.appendChild(label);
-            };
-            reader.readAsDataURL(file);
+
+            const label = document.createElement('div');
+            label.style.cssText = 'font-size:0.75rem; color:var(--text-secondary); overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+            label.textContent = file.name;
+
+            let media;
+            if (file.type.startsWith('video/')) {
+                media = document.createElement('video');
+                media.controls = true;
+            } else {
+                media = document.createElement('img');
+                media.alt = file.name || 'Selected file preview';
+            }
+            const objectUrl = URL.createObjectURL(file);
+            app.previewObjectUrls.push(objectUrl);
+            media.src = objectUrl;
+            media.style.cssText = 'max-width:200px; max-height:160px; border-radius:4px;';
+
+            item.appendChild(media);
+            item.appendChild(label);
             previewDiv.appendChild(item);
         });
     },
@@ -188,6 +322,9 @@ const app = {
             if (json.success) {
                 app.isAdmin = true;
                 app.adminPassword = password;
+                // Persist the admin flag (but never the password) so a refresh
+                // keeps the admin UI; password is restored via re-login.
+                localStorage.setItem('isAdmin', 'true');
                 app.updateAdminUI();
                 app.closeLoginModal();
                 
@@ -207,6 +344,7 @@ const app = {
 
     logout: () => {
         app.isAdmin = false;
+        app.adminPassword = null;
         localStorage.removeItem('isAdmin');
         app.updateAdminUI();
         
@@ -239,10 +377,40 @@ const app = {
 
     // --- API Calls ---
 
+    // Centralized fetch + JSON helper: checks res.ok, parses JSON safely,
+    // and surfaces failures via the toast mechanism. Throws on failure so
+    // callers can decide whether to abort their own flow.
+    fetchJson: async (url, opts = {}) => {
+        let res;
+        try {
+            res = await fetch(url, opts);
+        } catch (err) {
+            app.showToast("Network error. Is the server running?", 'error');
+            throw err;
+        }
+
+        let json = null;
+        try {
+            json = await res.json();
+        } catch (e) {
+            json = null;
+        }
+
+        if (!res.ok) {
+            const message = (json && json.error) ? json.error : `Request failed (${res.status})`;
+            app.showToast("Error: " + message, 'error');
+            const error = new Error(message);
+            error.status = res.status;
+            error.body = json;
+            throw error;
+        }
+
+        return json;
+    },
+
     loadSubreddits: async () => {
         try {
-            const res = await fetch(`${API_URL}/subreddits`);
-            const json = await res.json();
+            const json = await app.fetchJson(`${API_URL}/subreddits`);
             const nav = document.getElementById('sub-nav');
             nav.innerHTML = '';
 
@@ -319,13 +487,12 @@ const app = {
 
     vote: async (targetType, targetId, value) => {
         try {
-            const res = await fetch(`${API_URL}/vote`, {
+            const json = await app.fetchJson(`${API_URL}/vote`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ target_type: targetType, target_id: targetId, value })
             });
-            const json = await res.json();
-            if (json.success) {
+            if (json && json.success) {
                 const el = document.getElementById(`vote-count-${targetId}`);
                 if (el) el.textContent = json.total;
                 app.recordVote(targetId, value);
@@ -360,6 +527,10 @@ const app = {
     loadPosts: async (subreddit = app.currentSub, loadMore = false) => {
         const list = document.getElementById('post-list');
 
+        // Sequence token: only the most recent request is allowed to mutate the DOM.
+        // Prevents a slow earlier request from overwriting a newer subreddit's view.
+        const token = ++app.loadPostsToken;
+
         if (!loadMore) {
             app.currentPage = 1;
         }
@@ -373,7 +544,7 @@ const app = {
 
             headerHtml = `
                 <div style="display:flex; justify-content:space-between; align-items:center; padding: 10px 20px;">
-                    <h2>r/${subreddit}</h2>
+                    <h2>r/${app.escapeHtml(subreddit)}</h2>
                     ${deleteBtn}
                 </div>
              `;
@@ -386,8 +557,10 @@ const app = {
         }
 
         try {
-            const res = await fetch(`${API_URL}/r/${subreddit}?page=${app.currentPage}&limit=20`);
-            const json = await res.json();
+            const json = await app.fetchJson(`${API_URL}/r/${subreddit}?page=${app.currentPage}&limit=20`);
+
+            // A newer request superseded this one; discard the stale response.
+            if (token !== app.loadPostsToken) return;
 
             if (!loadMore) {
                 list.innerHTML = headerHtml || '';
@@ -418,14 +591,14 @@ const app = {
 
                 card.innerHTML = `
                     <div class="post-meta">
-                        <span class="subreddit-tag">r/${displaySub}</span> • Posted by ${post.author} • ${date}
+                        <span class="subreddit-tag">r/${app.escapeHtml(displaySub)}</span> • Posted by ${app.escapeHtml(post.author)} • ${app.escapeHtml(date)}
                     </div>
-                    <h2 class="post-title">${post.title}</h2>
+                    <h2 class="post-title">${app.escapeHtml(post.title)}</h2>
                     <div class="post-actions">
                         <span class="vote-btn" onclick="event.stopPropagation(); app.vote('post', ${post.id}, 1)" title="Upvote">⬆</span>
-                        <span class="vote-count" id="vote-count-${post.id}">${post.upvotes}</span>
+                        <span class="vote-count" id="vote-count-${post.id}">${app.escapeHtml(post.upvotes)}</span>
                         <span class="vote-btn" onclick="event.stopPropagation(); app.vote('post', ${post.id}, -1)" title="Downvote">⬇</span>
-                        <span>${post.comment_count ?? 0} comments</span>
+                        <span>${app.escapeHtml(post.comment_count ?? 0)} comments</span>
                     </div>
                 `;
                 list.appendChild(card);
@@ -435,7 +608,7 @@ const app = {
                 const loadMore = document.createElement('div');
                 loadMore.id = 'load-more-btn';
                 loadMore.style.cssText = 'text-align:center; padding:20px;';
-                loadMore.innerHTML = `<button class="primary-btn" onclick="app.loadPosts('${subreddit}', true)">Load More</button>`;
+                loadMore.innerHTML = `<button class="primary-btn" onclick="app.loadPosts('${app.escapeHtml(subreddit)}', true)">Load More</button>`;
                 list.appendChild(loadMore);
             }
 
@@ -443,8 +616,9 @@ const app = {
 
             app.restoreVoteHighlights();
         } catch (err) {
+            if (token !== app.loadPostsToken) return;
             if (!loadMore) {
-                list.innerHTML = '<div style="color:red; text-align:center;">Failed to load posts. Is server running?</div>';
+                list.innerHTML = (headerHtml || '') + '<div style="color:red; text-align:center; padding:20px;">Failed to load posts. Is server running?</div>';
             }
         }
     },
@@ -464,8 +638,7 @@ const app = {
         }
 
         try {
-            const res = await fetch(`${API_URL}/subreddits`);
-            const json = await res.json();
+            const json = await app.fetchJson(`${API_URL}/subreddits`);
             const sub = json.data.find(s => s.name === app.currentSub);
 
             if (sub) {
@@ -620,11 +793,10 @@ const app = {
         contentDiv.innerHTML = 'Loading...';
 
         try {
-            const res = await fetch(`${API_URL}/posts/${id}`);
-            const json = await res.json();
+            const json = await app.fetchJson(`${API_URL}/posts/${id}`);
 
-            if (json.error) {
-                contentDiv.innerHTML = 'Post not found.';
+            if (!json || json.error) {
+                contentDiv.innerHTML = '<div style="text-align:center; padding:20px; color:#666;">Post not found.</div>';
                 return;
             }
 
@@ -633,21 +805,28 @@ const app = {
             const date = new Date(p.created_at.replace(' ', 'T') + 'Z').toLocaleString();
 
             contentDiv.innerHTML = `
-                <div class="post-meta">r/${app.currentSub} • Posted by ${p.author} on ${date}</div>
-                <h1 style="color:white; margin: 10px 0;">${p.title}</h1>
+                <div class="post-meta">r/${app.escapeHtml(app.currentSub)} • Posted by ${app.escapeHtml(p.author)} on ${app.escapeHtml(date)}</div>
+                <h1 style="color:white; margin: 10px 0;">${app.escapeHtml(p.title)}</h1>
                 <div style="font-size: 1.1rem; line-height: 1.6; margin-bottom: 20px;">
                     ${app.parseMarkdown(app.cleanContent(p.content, attachments))}
                 </div>
                 ${app.renderAttachments(attachments)}
                 <div class="post-actions">
                     <span class="vote-btn" onclick="app.vote('post', ${p.id}, 1)" title="Upvote">⬆</span>
-                    <span class="vote-count" id="vote-count-${p.id}">${p.upvotes}</span>
+                    <span class="vote-count" id="vote-count-${p.id}">${app.escapeHtml(p.upvotes)}</span>
                     <span class="vote-btn" onclick="app.vote('post', ${p.id}, -1)" title="Downvote">⬇</span>
                     <span style="flex-grow:1"></span>
-                    <button onclick="app.editPost(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="management-btn edit-btn">Edit</button>
+                    <button id="edit-post-btn" class="management-btn edit-btn">Edit</button>
                     <button onclick="app.deletePost(${p.id})" class="management-btn delete-btn">Delete</button>
                 </div>
             `;
+
+            // Attach the edit handler via a closure instead of serializing the
+            // post object into an inline onclick attribute (prevents HTML/JS injection).
+            const editBtn = document.getElementById('edit-post-btn');
+            if (editBtn) {
+                editBtn.addEventListener('click', () => app.editPost(p));
+            }
 
             const commentTree = {};
             const roots = [];
@@ -674,15 +853,23 @@ const app = {
                     deleteBtn = `<button onclick="app.deleteComment(${c.id})" class="management-btn delete-btn" style="padding: 2px 8px; font-size: 0.75rem; margin-left: 12px; border-color: #ff4500 !important; color: #ff4500 !important;">Delete</button>`;
                 }
 
+                const commentTime = new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString();
                 div.innerHTML = `
                     <div class="meta" style="display: flex; align-items: center; flex-wrap: wrap;">
-                        <span>${c.author} • ${new Date(c.created_at.replace(' ', 'T') + 'Z').toLocaleTimeString()}</span>
+                        <span>${app.escapeHtml(c.author)} • ${app.escapeHtml(commentTime)}</span>
                         ${deleteBtn}
-                        <button onclick="app.replyTo(${c.id}, '${c.author.replace(/'/g, "\\'")}')" style="background:transparent; border:none; color:var(--accent-color); cursor:pointer; font-size:0.8rem; margin-left:12px;">Reply</button>
+                        <button class="reply-btn" data-comment-id="${c.id}" data-author="${app.escapeHtml(c.author)}" style="background:transparent; border:none; color:var(--accent-color); cursor:pointer; font-size:0.8rem; margin-left:12px;">Reply</button>
                     </div>
                     <div style="margin-top: 8px;">${app.parseMarkdown(c.content)}</div>
                 `;
                 commentsDiv.appendChild(div);
+
+                // Bind reply via closure rather than embedding the author string in
+                // an inline onclick attribute (prevents injection through author names).
+                const replyBtn = div.querySelector('.reply-btn');
+                if (replyBtn) {
+                    replyBtn.addEventListener('click', () => app.replyTo(c.id, c.author));
+                }
 
                 c.children.forEach(child => renderComment(child, depth + 1));
             };
@@ -692,6 +879,8 @@ const app = {
 
         } catch (err) {
             console.error(err);
+            // Replace the persistent "Loading..." with an actionable error message.
+            contentDiv.innerHTML = '<div style="text-align:center; padding:20px; color:#ff6b6b;">Failed to load this post. Please try again.</div>';
         }
     },
 
@@ -722,7 +911,7 @@ const app = {
         if (!content) return;
 
         try {
-            await fetch(`${API_URL}/comments`, {
+            await app.fetchJson(`${API_URL}/comments`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -732,11 +921,13 @@ const app = {
                     author
                 })
             });
+            // Only clear the form and reload on success.
             app.cancelReply();
             document.getElementById('comment-content').value = '';
             app.viewPost(app.currentPostId); // Reload
         } catch (err) {
-            app.showToast("Failed to comment", 'error');
+            // fetchJson already showed a toast; keep the user's text so they can retry.
+            console.error('Failed to comment:', err);
         }
     },
 
@@ -790,10 +981,11 @@ const app = {
         let html = marked.parse(text, { renderer });
 
         // YouTube Link Parser (Post-processing)
-        html = html.replace(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]+)/g, 
+        html = html.replace(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]+)/g,
             '<div class="video-container"><iframe src="https://www.youtube.com/embed/$1" frameborder="0" allowfullscreen></iframe></div>');
 
-        return html;
+        // Always sanitize before the result reaches innerHTML.
+        return app.sanitizeHtml(html);
     },
 
     deletePost: async (id) => {
@@ -857,7 +1049,7 @@ const app = {
         if (fileType && fileType.startsWith('video/')) {
             return `<video controls src="${fileUrl}" style="max-width:100%; border-radius:4px; margin-bottom:20px;"></video>`;
         }
-        return `<img src="${fileUrl}" style="max-width:100%; border-radius:4px; margin-bottom:20px;" loading="lazy">`;
+        return `<img src="${fileUrl}" alt="Post attachment" style="max-width:100%; border-radius:4px; margin-bottom:20px;" loading="lazy">`;
     },
 
     renderAttachments: (attachments) => {
@@ -911,7 +1103,7 @@ const app = {
                 if (attachment.type && attachment.type.startsWith('video/')) {
                     return `<video controls src="${attachment.url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;"></video>`;
                 }
-                return `<img src="${attachment.url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;">`;
+                return `<img src="${attachment.url}" alt="Current attachment" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;">`;
             }).join('')}</div>`;
         } else if (existingAttach) {
             existingAttach.remove();

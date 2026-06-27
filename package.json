@@ -3,6 +3,10 @@
   "version": "1.0.0",
   "description": "A portable, local-network Reddit clone",
   "main": "server/server.js",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node server/server.js"
   },
@@ -11,7 +15,6 @@
     "cors": "^2.8.5",
     "express": "^4.18.2",
     "ip": "^1.1.8",
-    "markdown-it": "^14.0.0",
     "multer": "^2.0.2",
     "sqlite3": "^5.1.7"
   }

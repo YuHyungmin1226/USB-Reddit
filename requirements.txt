@@ -7,6 +7,5 @@ body-parser     # HTTP 요청 본문 파싱
 cors            # 교차 출처 리소스 공유
 express         # 웹 서버 프레임워크
 ip              # IP 주소 감지
-markdown-it     # Markdown 렌더링
 multer          # 파일 업로드 처리
 sqlite3         # 데이터베이스

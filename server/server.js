@@ -5,12 +5,23 @@ const cors = require('cors');
 const path = require('path');
 const ip = require('ip');
 const fs = require('fs');
-
-// Load config
-const configPath = path.join(__dirname, '../config.json');
-const config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
-
 const crypto = require('crypto');
+
+// Load config (with friendly error handling)
+const configPath = path.join(__dirname, '../config.json');
+let config;
+try {
+    config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+} catch (err) {
+    if (err.code === 'ENOENT') {
+        console.error(`설정 파일을 찾을 수 없습니다: ${configPath}`);
+        console.error('config.json 파일을 생성한 뒤 서버를 다시 시작하세요.');
+    } else {
+        console.error(`설정 파일(config.json) 파싱 오류: ${err.message}`);
+        console.error('config.json 의 JSON 형식을 확인하세요.');
+    }
+    process.exit(1);
+}
 
 // Password hashing with Node.js built-in scrypt (no external deps)
 function hashPassword(password) {
@@ -33,11 +44,51 @@ function verifyAndUpgrade(password, stored, updateFn) {
     return crypto.timingSafeEqual(Buffer.from(hash), Buffer.from(key));
 }
 
+// Timing-safe comparison of the admin password (length-guarded)
+function verifyAdmin(provided) {
+    if (typeof provided !== 'string') return false;
+    const expected = config.admin.password;
+    if (typeof expected !== 'string') return false;
+    const a = Buffer.from(provided);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return crypto.timingSafeEqual(a, b);
+}
+
+// Dependency-free in-memory rate limiter (per-IP sliding window).
+// Returns an express middleware. `max` requests allowed per `windowMs`.
+function rateLimit({ windowMs, max, message }) {
+    const hits = new Map(); // ip -> [timestamps]
+    return (req, res, next) => {
+        const key = req.ip || (req.socket && req.socket.remoteAddress) || 'unknown';
+        const now = Date.now();
+        const arr = (hits.get(key) || []).filter(ts => now - ts < windowMs);
+        if (arr.length >= max) {
+            hits.set(key, arr);
+            return res.status(429).json({ error: message || "요청이 너무 많습니다. 잠시 후 다시 시도하세요." });
+        }
+        arr.push(now);
+        hits.set(key, arr);
+        // Opportunistic cleanup to avoid unbounded growth
+        if (hits.size > 5000) {
+            for (const [k, v] of hits) {
+                const live = v.filter(ts => now - ts < windowMs);
+                if (live.length === 0) hits.delete(k); else hits.set(k, live);
+            }
+        }
+        next();
+    };
+}
+
+const loginLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: "로그인 시도가 너무 많습니다. 1분 후 다시 시도하세요." });
+const sensitiveLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." });
+
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
 // Middleware
-app.use(cors());
+// Frontend is served from the same origin via express.static, so wide-open
+// CORS is unnecessary. Allow same-origin only (no cross-origin headers).
 app.use(bodyParser.json());
 app.use(express.static(path.join(__dirname, '../public')));
 
@@ -100,9 +151,8 @@ function initDb() {
             FOREIGN KEY(post_id) REFERENCES posts(id) ON DELETE CASCADE
         )`);
 
-        // Votes (drop legacy table, recreate with unique constraint)
-        db.run(`DROP TABLE IF EXISTS votes`);
-        db.run(`CREATE TABLE votes (
+        // Votes (preserve data across restarts; unique constraint enforced via index)
+        db.run(`CREATE TABLE IF NOT EXISTS votes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             target_type TEXT NOT NULL,
             target_id INTEGER NOT NULL,
@@ -114,7 +164,11 @@ function initDb() {
 
         // Seed default subreddit if empty
         db.get("SELECT count(*) as count FROM subreddits", (err, row) => {
-            if (row.count === 0) {
+            if (err) {
+                console.error("Error checking subreddits count:", err.message);
+                return;
+            }
+            if (row && row.count === 0) {
                 // Default sub with 'admin' password
                 db.run(`INSERT INTO subreddits (name, description, password) VALUES ('general', 'General discussion', 'admin')`);
                 console.log("Seeded default subreddit.");
@@ -145,10 +199,13 @@ function attachmentsForPost(post) {
 
 function normalizePost(post) {
     if (!post) return post;
-    return {
+    const normalized = {
         ...post,
         attachments: attachmentsForPost(post)
     };
+    // Never expose the password hash in API responses
+    delete normalized.password;
+    return normalized;
 }
 
 function attachmentMarkdown(attachment) {
@@ -189,12 +246,12 @@ app.post('/api/subreddits', (req, res) => {
 });
 
 // 2.1 Delete subreddit
-app.delete('/api/subreddits/:id', (req, res) => {
+app.delete('/api/subreddits/:id', sensitiveLimiter, (req, res) => {
     const subId = req.params.id;
     const { password, adminPassword } = req.body;
 
     // Admin can bypass subreddit password
-    if (adminPassword && adminPassword === config.admin.password) {
+    if (adminPassword && verifyAdmin(adminPassword)) {
         return deleteSubreddit(res);
     }
 
@@ -209,15 +266,27 @@ app.delete('/api/subreddits/:id', (req, res) => {
     });
 
     function deleteSubreddit(response) {
-        db.run("DELETE FROM votes WHERE target_type='post' AND target_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
-            if (e) console.error("Error deleting votes:", e);
-            db.run("DELETE FROM comments WHERE post_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
-                if (e) console.error("Error deleting comments:", e);
-                db.run("DELETE FROM posts WHERE subreddit_id = ?", [subId], (e) => {
-                    if (e) console.error("Error deleting posts:", e);
-                    db.run("DELETE FROM subreddits WHERE id = ?", [subId], (err) => {
-                        if (err) return response.status(500).json({ error: err.message });
-                        response.json({ message: "Subreddit deleted" });
+        db.serialize(() => {
+            db.run("BEGIN");
+            const fail = (err) => {
+                db.run("ROLLBACK");
+                return response.status(500).json({ error: err.message });
+            };
+            // votes has no FK -> must delete manually. comments/posts cascade via FK,
+            // but we delete explicitly to keep behaviour deterministic.
+            db.run("DELETE FROM votes WHERE target_type='post' AND target_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
+                if (e) return fail(e);
+                db.run("DELETE FROM comments WHERE post_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
+                    if (e) return fail(e);
+                    db.run("DELETE FROM posts WHERE subreddit_id = ?", [subId], (e) => {
+                        if (e) return fail(e);
+                        db.run("DELETE FROM subreddits WHERE id = ?", [subId], (e) => {
+                            if (e) return fail(e);
+                            db.run("COMMIT", (e) => {
+                                if (e) return fail(e);
+                                response.json({ message: "Subreddit deleted" });
+                            });
+                        });
                     });
                 });
             });
@@ -240,10 +309,13 @@ app.get('/api/r/:subreddit_name', (req, res) => {
             if (err) return res.status(500).json({ error: err.message });
 
             const query = `
-                SELECT posts.*, subreddits.name as subreddit_name,
+                SELECT posts.id, posts.subreddit_id, posts.title, posts.content,
+                    posts.author, posts.file_url,
+                    posts.file_type, posts.attachments, posts.created_at,
+                    subreddits.name as subreddit_name,
                     (SELECT COUNT(*) FROM comments WHERE comments.post_id = posts.id) as comment_count,
                     (SELECT COALESCE(SUM(value), 0) FROM votes WHERE target_type='post' AND target_id=posts.id) as upvotes
-                FROM posts 
+                FROM posts
                 LEFT JOIN subreddits ON posts.subreddit_id = subreddits.id 
                 WHERE posts.subreddit_id = ? 
                 ORDER BY posts.created_at DESC
@@ -267,6 +339,21 @@ app.get('/api/r/:subreddit_name', (req, res) => {
 
 const multer = require('multer');
 
+// Map trusted MIME types to safe extensions (do NOT trust originalname)
+const MIME_EXT_MAP = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/gif': '.gif',
+    'image/webp': '.webp',
+    'image/bmp': '.bmp',
+    'image/svg+xml': '.svg',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'video/ogg': '.ogv',
+    'video/quicktime': '.mov'
+};
+
 // Configure Multer for file uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
@@ -277,17 +364,47 @@ const storage = multer.diskStorage({
         cb(null, uploadDir);
     },
     filename: (req, file, cb) => {
-        // Keep original extension, prepend generic id or timestamp to avoid collisions
+        // Re-issue a safe extension based on MIME type, never the original name.
         const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + path.extname(file.originalname));
+        const ext = MIME_EXT_MAP[file.mimetype] || '';
+        cb(null, uniqueSuffix + ext);
     }
 });
-const upload = multer({ storage: storage });
+
+// Only allow image/* and video/* MIME types
+function fileFilter(req, file, cb) {
+    if (/^image\//.test(file.mimetype) || /^video\//.test(file.mimetype)) {
+        return cb(null, true);
+    }
+    cb(new Error("이미지 또는 비디오 파일만 업로드할 수 있습니다."), false);
+}
+
+const upload = multer({
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: {
+        fileSize: 50 * 1024 * 1024, // 50MB per file
+        files: 10
+    }
+});
+
+// Wrap multer middleware so upload errors return a 400 instead of crashing.
+function uploadAttachments(req, res, next) {
+    upload.array('attachment')(req, res, (err) => {
+        if (err) {
+            if (err instanceof multer.MulterError) {
+                return res.status(400).json({ error: `파일 업로드 오류: ${err.message}` });
+            }
+            return res.status(400).json({ error: err.message });
+        }
+        next();
+    });
+}
 
 // ... existing code ...
 
 // 4. Create post (with optional file attachments)
-app.post('/api/r/:subreddit_name', upload.array('attachment'), (req, res) => {
+app.post('/api/r/:subreddit_name', sensitiveLimiter, uploadAttachments, (req, res) => {
     const subName = req.params.subreddit_name;
     
     let { title, content, author, password } = req.body;
@@ -353,6 +470,9 @@ app.get('/api/posts/:id', (req, res) => {
 // 6. Create comment
 app.post('/api/comments', (req, res) => {
     const { post_id, parent_id, content, author } = req.body;
+    if (!post_id || !content || (typeof content === 'string' && content.trim() === '')) {
+        return res.status(400).json({ error: "post_id와 content는 필수입니다." });
+    }
     db.run("INSERT INTO comments (post_id, parent_id, content, author) VALUES (?, ?, ?, ?)",
         [post_id, parent_id, content, author], function (err) {
             if (err) return res.status(500).json({ error: err.message });
@@ -361,11 +481,11 @@ app.post('/api/comments', (req, res) => {
 });
 
 // 6.1 Delete comment (Admin only)
-app.delete('/api/comments/:id', (req, res) => {
+app.delete('/api/comments/:id', sensitiveLimiter, (req, res) => {
     const commentId = req.params.id;
     const { adminPassword } = req.body;
 
-    if (adminPassword !== config.admin.password) {
+    if (!verifyAdmin(adminPassword)) {
         return res.status(403).json({ error: "Admin access required" });
     }
 
@@ -376,12 +496,12 @@ app.delete('/api/comments/:id', (req, res) => {
 });
 
 // 7. Delete post (with password check or admin bypass)
-app.delete('/api/posts/:id', (req, res) => {
+app.delete('/api/posts/:id', sensitiveLimiter, (req, res) => {
     const postId = req.params.id;
     const { password, adminPassword } = req.body;
 
     // Admin can bypass post password
-    if (adminPassword && adminPassword === config.admin.password) {
+    if (adminPassword && verifyAdmin(adminPassword)) {
         return deletePost(postId, res);
     }
 
@@ -396,13 +516,24 @@ app.delete('/api/posts/:id', (req, res) => {
     });
 
     function deletePost(id, response) {
-        db.run("DELETE FROM comments WHERE post_id = ?", [id], (err) => {
-            if (err) console.error("Error deleting comments:", err);
-            db.run("DELETE FROM votes WHERE target_type='post' AND target_id=?", [id], (err) => {
-                if (err) console.error("Error deleting votes:", err);
-                db.run("DELETE FROM posts WHERE id = ?", [id], (err) => {
-                    if (err) return response.status(500).json({ error: err.message });
-                    response.json({ message: "Deleted successfully" });
+        db.serialize(() => {
+            db.run("BEGIN");
+            const fail = (err) => {
+                db.run("ROLLBACK");
+                return response.status(500).json({ error: err.message });
+            };
+            // comments cascade via FK; votes have no FK so delete manually.
+            db.run("DELETE FROM comments WHERE post_id = ?", [id], (e) => {
+                if (e) return fail(e);
+                db.run("DELETE FROM votes WHERE target_type='post' AND target_id=?", [id], (e) => {
+                    if (e) return fail(e);
+                    db.run("DELETE FROM posts WHERE id = ?", [id], (e) => {
+                        if (e) return fail(e);
+                        db.run("COMMIT", (e) => {
+                            if (e) return fail(e);
+                            response.json({ message: "Deleted successfully" });
+                        });
+                    });
                 });
             });
         });
@@ -415,7 +546,7 @@ app.put('/api/posts/:id', (req, res) => {
     const { title, content, password, adminPassword } = req.body;
 
     // Admin can bypass post password
-    const isAdmin = adminPassword && adminPassword === config.admin.password;
+    const isAdmin = adminPassword && verifyAdmin(adminPassword);
 
     if (!password && !isAdmin) {
         return res.status(400).json({ error: "Password is required" });
@@ -452,7 +583,10 @@ app.post('/api/vote', (req, res) => {
     if (!['post', 'comment'].includes(target_type)) {
         return res.status(400).json({ error: "target_type must be 'post' or 'comment'" });
     }
-    const userIp = req.ip || req.connection.remoteAddress;
+    if (!Number.isInteger(target_id)) {
+        return res.status(400).json({ error: "target_id must be an integer" });
+    }
+    const userIp = req.ip || (req.socket && req.socket.remoteAddress);
 
     db.run(`INSERT INTO votes (target_type, target_id, user_ip, value) VALUES (?, ?, ?, ?)
             ON CONFLICT(target_type, target_id, user_ip) DO UPDATE SET value = excluded.value`,
@@ -467,10 +601,10 @@ app.post('/api/vote', (req, res) => {
         });
 });
 
-// 7.3 Admin Login
-app.post('/api/login', (req, res) => {
+// 7.3 Admin Login (timing-safe compare + rate limited)
+app.post('/api/login', loginLimiter, (req, res) => {
     const { username, password } = req.body;
-    if (username === config.admin.username && password === config.admin.password) {
+    if (username === config.admin.username && verifyAdmin(password)) {
         res.json({ success: true, message: "Logged in as admin" });
     } else {
         res.status(401).json({ success: false, error: "Invalid credentials" });
@@ -481,7 +615,7 @@ app.post('/api/login', (req, res) => {
 app.post('/api/export', (req, res) => {
     // Basic protection (optional but good practice)
     const { adminPassword } = req.body;
-    if (adminPassword !== config.admin.password) {
+    if (!verifyAdmin(adminPassword)) {
         return res.status(403).json({ error: "Admin access required" });
     }
 
@@ -508,6 +642,7 @@ app.post('/api/export', (req, res) => {
         }
 
         let successCount = 0;
+        let failCount = 0;
         rows.forEach(post => {
             const subName = post.subreddit_name || 'unknown';
             const subDir = path.join(exportDir, subName);
@@ -515,13 +650,16 @@ app.post('/api/export', (req, res) => {
                 fs.mkdirSync(subDir, { recursive: true });
             }
 
-            let safeTitle = post.title.replace(/[\/\?<>\\:\*\|"]/g, '_').trim();
-            if (!safeTitle) safeTitle = `unnamed_post_${post.id}`;
-            
+            // Guard against null/empty title to avoid crashes
+            const rawTitle = post.title || '';
+            let safeTitle = rawTitle.replace(/[\/\?<>\\:\*\|"]/g, '_').trim();
+            if (!safeTitle) safeTitle = 'unnamed_post';
+
             let safeDate = post.created_at ? post.created_at.substring(0, 10).replace(/[: ]/g, '-') : 'unknown-date';
             let safeAuthor = post.author ? post.author.replace(/[\/\?<>\\:\*\|"]/g, '_') : 'unknown';
-            
-            const fileName = `${safeTitle}_${safeDate}_${safeAuthor}.md`;
+
+            // Include post.id to prevent overwriting files with identical names
+            const fileName = `${safeTitle}_${safeDate}_${safeAuthor}_${post.id}.md`;
             const filePath = path.join(subDir, fileName);
 
             const normalizedPost = normalizePost(post);
@@ -530,13 +668,13 @@ app.post('/api/export', (req, res) => {
             const bodyContent = attachmentBlock ? `${cleanContent}\n\n${attachmentBlock}` : cleanContent;
 
             const mdContent = `---
-title: "${post.title.replace(/"/g, '\\"')}"
-author: "${post.author}"
+title: "${rawTitle.replace(/"/g, '\\"')}"
+author: "${post.author || ''}"
 subreddit: "r/${subName}"
-date: "${post.created_at}"
+date: "${post.created_at || ''}"
 ---
 
-# ${post.title}
+# ${rawTitle}
 
 ${bodyContent}
 `;
@@ -545,20 +683,22 @@ ${bodyContent}
                 fs.writeFileSync(filePath, mdContent, 'utf-8');
                 successCount++;
             } catch (fileErr) {
+                failCount++;
                 console.error(`File save failed (${fileName}):`, fileErr.message);
             }
         });
 
-        res.json({ 
-            message: `Successfully exported: ${successCount} posts`, 
+        res.json({
+            message: `Successfully exported: ${successCount} posts`,
             count: successCount,
+            failed: failCount,
             path: exportDir
         });
     });
 });
 
 // Start Server
-app.listen(PORT, '0.0.0.0', () => {
+const server = app.listen(PORT, '0.0.0.0', () => {
     const localIp = ip.address();
     console.log(`
     ===========================================
@@ -568,4 +708,15 @@ app.listen(PORT, '0.0.0.0', () => {
       - Network: http://${localIp}:${PORT}
     ===========================================
     `);
+});
+
+server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+        console.error(`\n[오류] 포트 ${PORT} 이(가) 이미 사용 중입니다.`);
+        console.error('다른 프로그램이 해당 포트를 점유하고 있습니다.');
+        console.error(`다른 포트로 실행하려면 환경변수 PORT 를 지정하세요. 예: PORT=3001 node server/server.js\n`);
+        process.exit(1);
+    }
+    console.error('서버 시작 중 오류가 발생했습니다:', err.message);
+    process.exit(1);
 });
