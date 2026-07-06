@@ -1,9 +1,8 @@
 const express = require('express');
 const sqlite3 = require('sqlite3').verbose();
 const bodyParser = require('body-parser');
-const cors = require('cors');
+const os = require('os');
 const path = require('path');
-const ip = require('ip');
 const fs = require('fs');
 const crypto = require('crypto');
 
@@ -83,6 +82,54 @@ function rateLimit({ windowMs, max, message }) {
 const loginLimiter = rateLimit({ windowMs: 60 * 1000, max: 10, message: "로그인 시도가 너무 많습니다. 1분 후 다시 시도하세요." });
 const sensitiveLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: "요청이 너무 많습니다. 잠시 후 다시 시도하세요." });
 
+const SUBREDDIT_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,31}$/;
+const RESERVED_SUBREDDITS = new Set(['general', 'random']);
+
+function normalizeSubredditName(value) {
+    return typeof value === 'string' ? value.trim() : '';
+}
+
+function isValidSubredditName(name) {
+    return SUBREDDIT_NAME_RE.test(name);
+}
+
+function isReservedSubreddit(name) {
+    return RESERVED_SUBREDDITS.has(String(name || '').toLowerCase());
+}
+
+function getVoteTargetTable(targetType) {
+    if (targetType === 'post') return 'posts';
+    if (targetType === 'comment') return 'comments';
+    return null;
+}
+
+function sanitizePathSegment(value, fallback = 'unknown') {
+    const cleaned = String(value || '')
+        .trim()
+        .replace(/[^A-Za-z0-9._-]/g, '_')
+        .replace(/^\.+/, '');
+    return cleaned || fallback;
+}
+
+function cleanupUploadedFiles(files) {
+    (files || []).forEach((file) => {
+        if (!file || !file.path) return;
+        fs.unlink(file.path, () => {});
+    });
+}
+
+function getLocalAddress() {
+    const networks = os.networkInterfaces();
+    for (const addresses of Object.values(networks)) {
+        for (const address of addresses || []) {
+            if (address && address.family === 'IPv4' && !address.internal) {
+                return address.address;
+            }
+        }
+    }
+    return '127.0.0.1';
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -90,7 +137,11 @@ const PORT = process.env.PORT || 3000;
 // Frontend is served from the same origin via express.static, so wide-open
 // CORS is unnecessary. Allow same-origin only (no cross-origin headers).
 app.use(bodyParser.json());
-app.use(express.static(path.join(__dirname, '../public')));
+app.use(express.static(path.join(__dirname, '../public'), {
+    setHeaders: (res) => {
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+}));
 
 // Database Setup
 const dbDir = path.join(__dirname, '../data');
@@ -169,8 +220,8 @@ function initDb() {
                 return;
             }
             if (row && row.count === 0) {
-                // Default sub with 'admin' password
-                db.run(`INSERT INTO subreddits (name, description, password) VALUES ('general', 'General discussion', 'admin')`);
+                // Default sub uses the admin password hash; it is also protected from deletion.
+                db.run("INSERT INTO subreddits (name, description, password) VALUES (?, ?, ?)", ['general', 'General discussion', hashPassword(config.admin.password)]);
                 console.log("Seeded default subreddit.");
             }
         });
@@ -236,12 +287,27 @@ app.get('/api/subreddits', (req, res) => {
 // 2. Create subreddit
 app.post('/api/subreddits', (req, res) => {
     const { name, description, password } = req.body;
-    if (!name || !password) return res.status(400).json({ error: "Name and Password are required" });
+    const subredditName = normalizeSubredditName(name);
+
+    if (!subredditName || !password) {
+        return res.status(400).json({ error: "Name and password are required" });
+    }
+    if (!isValidSubredditName(subredditName)) {
+        return res.status(400).json({ error: "Subreddit names must be 1-32 characters and use only letters, numbers, underscores, or hyphens" });
+    }
+    if (isReservedSubreddit(subredditName)) {
+        return res.status(400).json({ error: "That subreddit name is reserved" });
+    }
 
     const hashedPwd = hashPassword(password);
-    db.run("INSERT INTO subreddits (name, description, password) VALUES (?, ?, ?)", [name, description, hashedPwd], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ id: this.lastID, name });
+    db.run("INSERT INTO subreddits (name, description, password) VALUES (?, ?, ?)", [subredditName, description, hashedPwd], function (err) {
+        if (err) {
+            if (err.code === 'SQLITE_CONSTRAINT') {
+                return res.status(409).json({ error: "That subreddit name is already in use" });
+            }
+            return res.status(500).json({ error: err.message });
+        }
+        res.json({ id: this.lastID, name: subredditName });
     });
 });
 
@@ -250,13 +316,16 @@ app.delete('/api/subreddits/:id', sensitiveLimiter, (req, res) => {
     const subId = req.params.id;
     const { password, adminPassword } = req.body;
 
-    // Admin can bypass subreddit password
-    if (adminPassword && verifyAdmin(adminPassword)) {
-        return deleteSubreddit(res);
-    }
-
-    db.get("SELECT password FROM subreddits WHERE id = ?", [subId], (err, row) => {
+    db.get("SELECT name, password FROM subreddits WHERE id = ?", [subId], (err, row) => {
         if (err || !row) return res.status(404).json({ error: "Subreddit not found" });
+        if (isReservedSubreddit(row.name)) {
+            return res.status(403).json({ error: "Reserved subreddits cannot be deleted" });
+        }
+
+        // Admin can bypass subreddit password
+        if (adminPassword && verifyAdmin(adminPassword)) {
+            return deleteSubreddit(res);
+        }
 
         if (!verifyAndUpgrade(password, row.password, (h) => db.run("UPDATE subreddits SET password = ? WHERE id = ?", [h, subId]))) {
             return res.status(403).json({ error: "Incorrect password" });
@@ -347,7 +416,6 @@ const MIME_EXT_MAP = {
     'image/gif': '.gif',
     'image/webp': '.webp',
     'image/bmp': '.bmp',
-    'image/svg+xml': '.svg',
     'video/mp4': '.mp4',
     'video/webm': '.webm',
     'video/ogg': '.ogv',
@@ -379,9 +447,19 @@ function fileFilter(req, file, cb) {
     cb(new Error("이미지 또는 비디오 파일만 업로드할 수 있습니다."), false);
 }
 
+function safeFileFilter(req, file, cb) {
+    const isImage = /^image\//.test(file.mimetype);
+    const isVideo = /^video\//.test(file.mimetype);
+    const isSvg = file.mimetype === 'image/svg+xml';
+    if ((isImage || isVideo) && !isSvg) {
+        return cb(null, true);
+    }
+    cb(new Error("Only non-SVG image and video files can be uploaded."), false);
+}
+
 const upload = multer({
     storage: storage,
-    fileFilter: fileFilter,
+    fileFilter: safeFileFilter,
     limits: {
         fileSize: 50 * 1024 * 1024, // 50MB per file
         files: 10
@@ -403,40 +481,54 @@ function uploadAttachments(req, res, next) {
 
 // ... existing code ...
 
-// 4. Create post (with optional file attachments)
-app.post('/api/r/:subreddit_name', sensitiveLimiter, uploadAttachments, (req, res) => {
-    const subName = req.params.subreddit_name;
-    
-    let { title, content, author, password } = req.body;
-
-    if (!password) {
-        return res.status(400).json({ error: "Password is required." });
-    }
-
-    // Default Title: YYYY-MM-DD HH:MM:SS
-    if (!title || title.trim() === '') {
-        const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
-        title = now.getFullYear() + "-" +
-            String(now.getMonth() + 1).padStart(2, '0') + "-" +
-            String(now.getDate()).padStart(2, '0') + " " +
-            String(now.getHours()).padStart(2, '0') + ":" +
-            String(now.getMinutes()).padStart(2, '0') + ":" +
-            String(now.getSeconds()).padStart(2, '0');
-    }
-
-    // Ensure content is string (it might be undefined if empty form data)
-    content = content || '';
-
-    const attachments = (req.files || []).map(file => ({
-        url: `/uploads/${file.filename}`,
-        type: file.mimetype
-    }));
-    attachments.forEach((attachment) => {
-        content += `\n\n${attachmentMarkdown(attachment)}`;
+function safeUploadAttachments(req, res, next) {
+    upload.array('attachment')(req, res, (err) => {
+        if (err) {
+            if (err instanceof multer.MulterError) {
+                return res.status(400).json({ error: `Upload failed: ${err.message}` });
+            }
+            return res.status(400).json({ error: err.message });
+        }
+        next();
     });
+}
 
-    db.get("SELECT id FROM subreddits WHERE name = ?", [subName], (err, sub) => {
-        if (err || !sub) return res.status(404).json({ error: "Subreddit not found" });
+// 4. Create post (with optional file attachments)
+app.post('/api/r/:subreddit_name', sensitiveLimiter, safeUploadAttachments, (req, res) => {
+    const subName = req.params.subreddit_name;
+
+    let { title, content, author, password } = req.body;
+    const fail = (status, message) => {
+        cleanupUploadedFiles(req.files);
+        return res.status(status).json(typeof message === 'string' ? { error: message } : message);
+    };
+
+    db.get("SELECT id FROM subreddits WHERE name = ?", [subName], (lookupErr, sub) => {
+        if (lookupErr) return fail(500, lookupErr.message);
+        if (!sub) return fail(404, "Subreddit not found");
+        if (!password) return fail(400, "Password is required.");
+
+        // Default title: YYYY-MM-DD HH:MM:SS in Asia/Seoul.
+        if (!title || title.trim() === '') {
+            const now = new Date(new Date().toLocaleString('en-US', { timeZone: 'Asia/Seoul' }));
+            title = now.getFullYear() + "-" +
+                String(now.getMonth() + 1).padStart(2, '0') + "-" +
+                String(now.getDate()).padStart(2, '0') + " " +
+                String(now.getHours()).padStart(2, '0') + ":" +
+                String(now.getMinutes()).padStart(2, '0') + ":" +
+                String(now.getSeconds()).padStart(2, '0');
+        }
+
+        // Ensure content is string (it might be undefined if empty form data)
+        content = content || '';
+
+        const attachments = (req.files || []).map(file => ({
+            url: `/uploads/${file.filename}`,
+            type: file.mimetype
+        }));
+        attachments.forEach((attachment) => {
+            content += `\n\n${attachmentMarkdown(attachment)}`;
+        });
 
         const hashedPwd = hashPassword(password);
         const firstAttachment = attachments[0] || null;
@@ -444,8 +536,8 @@ app.post('/api/r/:subreddit_name', sensitiveLimiter, uploadAttachments, (req, re
         const fileType = firstAttachment ? firstAttachment.type : null;
         const attachmentsJson = attachments.length > 0 ? JSON.stringify(attachments) : null;
         db.run("INSERT INTO posts (subreddit_id, title, content, author, password, file_url, file_type, attachments) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            [sub.id, title, content, author, hashedPwd, fileUrl, fileType, attachmentsJson], function (err) {
-                if (err) return res.status(500).json({ error: err.message });
+            [sub.id, title, content, author, hashedPwd, fileUrl, fileType, attachmentsJson], function (insertErr) {
+                if (insertErr) return fail(500, insertErr.message);
                 res.json({ id: this.lastID, file_url: fileUrl, file_type: fileType, attachments });
             });
     });
@@ -500,13 +592,13 @@ app.delete('/api/posts/:id', sensitiveLimiter, (req, res) => {
     const postId = req.params.id;
     const { password, adminPassword } = req.body;
 
-    // Admin can bypass post password
-    if (adminPassword && verifyAdmin(adminPassword)) {
-        return deletePost(postId, res);
-    }
-
     db.get("SELECT password FROM posts WHERE id = ?", [postId], (err, row) => {
         if (err || !row) return res.status(404).json({ error: "Post not found" });
+
+        // Admin can bypass post password
+        if (adminPassword && verifyAdmin(adminPassword)) {
+            return deletePost(postId, res);
+        }
 
         if (!verifyAndUpgrade(password, row.password, (h) => db.run("UPDATE posts SET password = ? WHERE id = ?", [h, postId]))) {
             return res.status(403).json({ error: "Incorrect password" });
@@ -541,7 +633,7 @@ app.delete('/api/posts/:id', sensitiveLimiter, (req, res) => {
 });
 
 // 7.1 Update post (with password check or admin bypass)
-app.put('/api/posts/:id', (req, res) => {
+app.put('/api/posts/:id', sensitiveLimiter, (req, res) => {
     const postId = req.params.id;
     const { title, content, password, adminPassword } = req.body;
 
@@ -569,6 +661,7 @@ app.put('/api/posts/:id', (req, res) => {
     function updatePost() {
         db.run("UPDATE posts SET title = ?, content = ? WHERE id = ?", [title, content, postId], function (err) {
             if (err) return res.status(500).json({ error: err.message });
+            if (this.changes === 0) return res.status(404).json({ error: "Post not found" });
             res.json({ message: "Updated successfully" });
         });
     }
@@ -587,18 +680,24 @@ app.post('/api/vote', (req, res) => {
         return res.status(400).json({ error: "target_id must be an integer" });
     }
     const userIp = req.ip || (req.socket && req.socket.remoteAddress);
+    const voteTargetTable = getVoteTargetTable(target_type);
 
-    db.run(`INSERT INTO votes (target_type, target_id, user_ip, value) VALUES (?, ?, ?, ?)
-            ON CONFLICT(target_type, target_id, user_ip) DO UPDATE SET value = excluded.value`,
-        [target_type, target_id, userIp, value], function (err) {
-            if (err) return res.status(500).json({ error: err.message });
+    db.get(`SELECT id FROM ${voteTargetTable} WHERE id = ?`, [target_id], (lookupErr, row) => {
+        if (lookupErr) return res.status(500).json({ error: lookupErr.message });
+        if (!row) return res.status(404).json({ error: `${target_type} not found` });
 
-            db.get("SELECT COALESCE(SUM(value), 0) as total FROM votes WHERE target_type=? AND target_id=?",
-                [target_type, target_id], (err, row) => {
-                    if (err) return res.json({ success: true });
-                    res.json({ success: true, total: row.total });
-                });
-        });
+        db.run(`INSERT INTO votes (target_type, target_id, user_ip, value) VALUES (?, ?, ?, ?)
+                ON CONFLICT(target_type, target_id, user_ip) DO UPDATE SET value = excluded.value`,
+            [target_type, target_id, userIp, value], function (voteErr) {
+                if (voteErr) return res.status(500).json({ error: voteErr.message });
+
+                db.get("SELECT COALESCE(SUM(value), 0) as total FROM votes WHERE target_type=? AND target_id=?",
+                    [target_type, target_id], (totalErr, totalRow) => {
+                        if (totalErr) return res.json({ success: true });
+                        res.json({ success: true, total: totalRow.total });
+                    });
+            });
+    });
 });
 
 // 7.3 Admin Login (timing-safe compare + rate limited)
@@ -645,7 +744,8 @@ app.post('/api/export', (req, res) => {
         let failCount = 0;
         rows.forEach(post => {
             const subName = post.subreddit_name || 'unknown';
-            const subDir = path.join(exportDir, subName);
+            const safeSubDirName = sanitizePathSegment(subName, 'unknown');
+            const subDir = path.join(exportDir, safeSubDirName);
             if (!fs.existsSync(subDir)) {
                 fs.mkdirSync(subDir, { recursive: true });
             }
@@ -699,7 +799,7 @@ ${bodyContent}
 
 // Start Server
 const server = app.listen(PORT, '0.0.0.0', () => {
-    const localIp = ip.address();
+    const localIp = getLocalAddress();
     console.log(`
     ===========================================
       USB Reddit Server Running!

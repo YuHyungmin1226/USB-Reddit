@@ -112,6 +112,10 @@ const app = {
                         child.removeAttribute(attr.name);
                         continue;
                     }
+                    if (tag === 'IFRAME' && name === 'srcdoc') {
+                        child.removeAttribute(attr.name);
+                        continue;
+                    }
                     if (name === 'style') {
                         // Drop styles that can execute (url()/expression()).
                         if (/url\s*\(|expression\s*\(|javascript:/i.test(attr.value)) {
@@ -184,11 +188,16 @@ const app = {
     },
 
     resetPostForm: () => {
+        const formTitle = document.getElementById('form-title');
         const subNameSpan = document.getElementById('create-post-sub-name');
         if (subNameSpan) {
-            document.getElementById('form-title').innerHTML = `Create Post in r/<span id="create-post-sub-name">${app.currentSub}</span>`;
+            formTitle.textContent = 'Create Post in r/';
+            const safeSpan = document.createElement('span');
+            safeSpan.id = 'create-post-sub-name';
+            safeSpan.innerText = app.currentSub;
+            formTitle.appendChild(safeSpan);
         } else {
-            document.getElementById('form-title').innerText = `Create Post in r/${app.currentSub}`;
+            formTitle.innerText = `Create Post in r/${app.currentSub}`;
         }
         document.getElementById('edit-post-id').value = '';
         document.getElementById('post-title').value = '';
@@ -197,6 +206,7 @@ const app = {
         document.getElementById('post-password').value = '';
         document.getElementById('attachment-field').style.display = 'block';
         document.getElementById('post-submit-btn').innerText = "Post";
+        app.adminEditFlag = false;
         
         // Auto fill author if known
         if (app.user !== 'Guest') {
@@ -468,20 +478,19 @@ const app = {
         if (!password) { app.showToast("Password is required.", 'error'); return; }
 
         try {
-            const res = await fetch(`${API_URL}/subreddits`, {
+            const json = await app.fetchJson(`${API_URL}/subreddits`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name, description: desc, password })
             });
-            if (res.ok) {
-                app.closeCreateSubModal();
-                app.loadSubreddits();
-                app.switchSub(name);
-            } else {
-                app.showToast("Failed to create subreddit. Name might be taken.", 'error');
-            }
+            app.closeCreateSubModal();
+            app.currentSub = json.name;
+            await app.loadSubreddits();
+            const activeLink = Array.from(document.querySelectorAll('.sub-link'))
+                .find((link) => link.innerText === `r/${json.name}`);
+            app.switchSub(json.name, activeLink);
         } catch (err) {
-            app.showToast("Error creating subreddit", 'error');
+            console.error('Failed to create subreddit:', err);
         }
     },
 
@@ -608,7 +617,12 @@ const app = {
                 const loadMore = document.createElement('div');
                 loadMore.id = 'load-more-btn';
                 loadMore.style.cssText = 'text-align:center; padding:20px;';
-                loadMore.innerHTML = `<button class="primary-btn" onclick="app.loadPosts('${app.escapeHtml(subreddit)}', true)">Load More</button>`;
+                const button = document.createElement('button');
+                button.className = 'primary-btn';
+                button.type = 'button';
+                button.innerText = 'Load More';
+                button.addEventListener('click', () => app.loadPosts(subreddit, true));
+                loadMore.appendChild(button);
                 list.appendChild(loadMore);
             }
 
@@ -673,8 +687,9 @@ const app = {
         const content = document.getElementById('post-content').value;
         const author = document.getElementById('post-author').value || 'Anonymous';
         let password = document.getElementById('post-password').value;
-        
-        if (!password) {
+        const isAdminEdit = Boolean(editId && app.adminEditFlag);
+
+        if (!password && (!editId || !isAdminEdit)) {
             password = await app.requestPassword("Password Required", "Set a password to manage (edit/delete) this post later:");
             if (!password) return;
             document.getElementById('post-password').value = password;
@@ -683,10 +698,9 @@ const app = {
         if (editId) {
             // Update Existing Post
             try {
-                const body = app.adminEditFlag
+                const body = isAdminEdit
                     ? { title, content, password, adminPassword: app.adminPassword }
                     : { title, content, password };
-                app.adminEditFlag = false;
                 const res = await fetch(`${API_URL}/posts/${editId}`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },

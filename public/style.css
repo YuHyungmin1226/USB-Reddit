@@ -50,6 +50,8 @@ header {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
     padding: 20px 0;
     border-bottom: 1px solid var(--border-color);
     margin-bottom: 30px;
@@ -69,6 +71,11 @@ h1.logo:hover {
 }
 
 #user-info {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
     font-size: 0.9rem;
     color: var(--text-secondary);
 }
@@ -615,4 +622,27 @@ textarea:focus {
 .upload-status {
     color: var(--text-secondary);
     font-size: 0.9rem;
+}
+
+@media (max-width: 720px) {
+    .container {
+        padding: 16px;
+    }
+
+    header {
+        align-items: flex-start;
+    }
+
+    #user-info {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .create-post-form {
+        padding: 16px;
+    }
+
+    .post-card {
+        padding: 14px 16px;
+    }
 }
