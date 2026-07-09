@@ -1,2 +1,0 @@
-# No Python packages are required for this project.
-# Application dependencies are managed through package.json and package-lock.json.

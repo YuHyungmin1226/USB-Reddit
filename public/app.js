@@ -4,6 +4,8 @@ const app = {
     currentSub: 'general',
     currentPostId: null,
     user: 'Guest',
+    authenticated: false,
+    accessEnabled: true,
     isAdmin: false,
     adminPassword: null,
     passwordResolver: null,
@@ -66,19 +68,22 @@ const app = {
             return true;
         };
 
-        const isAllowedIframe = (src) => {
-            if (!src) return false;
+        const getSafeYouTubeEmbedSrc = (src) => {
+            if (!src) return null;
             try {
                 const url = new URL(src, window.location.href);
                 const host = url.hostname.toLowerCase();
-                return (
+                const pathname = url.pathname.replace(/\/+$/, '');
+                if (url.protocol !== 'https:') return null;
+                const allowedHost =
                     host === 'www.youtube.com' ||
                     host === 'youtube.com' ||
                     host === 'www.youtube-nocookie.com' ||
-                    host === 'youtube-nocookie.com'
-                );
+                    host === 'youtube-nocookie.com';
+                if (!allowedHost || !pathname.startsWith('/embed/')) return null;
+                return `${url.origin}${pathname}`;
             } catch (e) {
-                return false;
+                return null;
             }
         };
 
@@ -98,10 +103,17 @@ const app = {
                 }
 
                 if (tag === 'IFRAME') {
-                    if (!isAllowedIframe(child.getAttribute('src'))) {
+                    const safeSrc = getSafeYouTubeEmbedSrc(child.getAttribute('src'));
+                    if (!safeSrc) {
                         toRemove.push(child);
                         continue;
                     }
+                    child.setAttribute('src', safeSrc);
+                    child.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-presentation');
+                    child.setAttribute('referrerpolicy', 'strict-origin-when-cross-origin');
+                    child.setAttribute('allow', 'accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share');
+                    child.setAttribute('loading', 'lazy');
+                    child.setAttribute('allowfullscreen', '');
                 }
 
                 // Clean attributes.
@@ -112,15 +124,16 @@ const app = {
                         child.removeAttribute(attr.name);
                         continue;
                     }
+                    if (name === 'id' || name === 'name') {
+                        child.removeAttribute(attr.name);
+                        continue;
+                    }
                     if (tag === 'IFRAME' && name === 'srcdoc') {
                         child.removeAttribute(attr.name);
                         continue;
                     }
                     if (name === 'style') {
-                        // Drop styles that can execute (url()/expression()).
-                        if (/url\s*\(|expression\s*\(|javascript:/i.test(attr.value)) {
-                            child.removeAttribute(attr.name);
-                        }
+                        child.removeAttribute(attr.name);
                         continue;
                     }
                     if (URL_ATTRS.has(name)) {
@@ -139,17 +152,167 @@ const app = {
         return doc.body.innerHTML;
     },
 
-    init: async () => {
-        // isAdmin is persisted, but adminPassword is intentionally NOT stored in
-        // localStorage for security. If a prior session was admin, restore the UI
-        // flag and prompt the user to re-login so admin actions have a password.
-        app.isAdmin = localStorage.getItem('isAdmin') === 'true';
-        app.updateAdminUI();
-        if (app.isAdmin && !app.adminPassword) {
-            app.showToast("Admin session restored. Please re-login to perform admin actions.", 'info', 5000);
+    extractYouTubeId: (value) => {
+        if (!value) return null;
+        try {
+            const url = new URL(value, window.location.href);
+            const host = url.hostname.toLowerCase();
+            if (host === 'youtu.be' || host === 'www.youtu.be') {
+                return url.pathname.replace(/^\/+/, '').split('/')[0] || null;
+            }
+            if (host === 'youtube.com' || host === 'www.youtube.com') {
+                return url.searchParams.get('v');
+            }
+        } catch (err) {
+            return null;
         }
+        return null;
+    },
+
+    embedBareYouTubeUrls: (text) => {
+        const lines = String(text || '').split(/\r?\n/);
+        let activeFence = null;
+
+        return lines.map((line) => {
+            const fenceMatch = line.match(/^\s*([`~]{3,})/);
+            if (fenceMatch) {
+                const marker = fenceMatch[1];
+                if (!activeFence) {
+                    activeFence = marker;
+                } else if (marker[0] === activeFence[0] && marker.length >= activeFence.length) {
+                    activeFence = null;
+                }
+                return line;
+            }
+
+            if (activeFence) return line;
+            if (/^(?: {4,}|\t)/.test(line)) return line;
+
+            return line.replace(
+                /^(\s*)((?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)[^\s<]+)(\s*)$/,
+                (match, leading, url, trailing) => {
+                    const videoId = app.extractYouTubeId(url);
+                    if (!videoId) return match;
+                    return `${leading}<div class="video-container"><iframe src="https://www.youtube.com/embed/${videoId}" allowfullscreen></iframe></div>${trailing}`;
+                }
+            );
+        }).join('\n');
+    },
+
+    getSafeAttachmentUrl: (value) => {
+        if (typeof value !== 'string' || !value.trim()) return null;
+        const trimmed = value.trim();
+        const normalized = trimmed.replace(/[\x00-\x20]/g, '').toLowerCase();
+        if (normalized.startsWith('javascript:') || normalized.startsWith('vbscript:') || normalized.startsWith('data:')) {
+            return null;
+        }
+        try {
+            const url = new URL(trimmed, window.location.href);
+            if (url.origin !== window.location.origin) return null;
+            if (!url.pathname.startsWith('/uploads/')) return null;
+            return `${url.pathname}${url.search}${url.hash}`;
+        } catch (err) {
+            return null;
+        }
+    },
+
+    init: async () => {
+        document.body.classList.add('auth-locked');
+        const session = await app.checkSession();
+        if (!session.authenticated) {
+            app.showAuthScreen();
+            return;
+        }
+
+        app.applySession(session);
+        await app.loadInitialData();
+    },
+
+    checkSession: async () => {
+        try {
+            const res = await fetch(`${API_URL}/session`);
+            const json = await res.json().catch(() => ({}));
+            if (!res.ok) {
+                return { authenticated: false, accessEnabled: true, ...json };
+            }
+            return json;
+        } catch (err) {
+            return { authenticated: false, accessEnabled: true, error: "Server connection failed" };
+        }
+    },
+
+    loadInitialData: async () => {
         await app.loadSubreddits();
         app.loadPosts();
+    },
+
+    applySession: (session) => {
+        app.authenticated = Boolean(session.authenticated);
+        app.accessEnabled = session.accessEnabled !== false;
+        app.isAdmin = session.role === 'admin';
+        app.adminPassword = null;
+        localStorage.removeItem('isAdmin');
+        app.updateAdminUI();
+        app.hideAuthScreen();
+    },
+
+    showAuthScreen: (message = '') => {
+        app.authenticated = false;
+        app.isAdmin = false;
+        app.adminPassword = null;
+        localStorage.removeItem('isAdmin');
+        app.updateAdminUI();
+        document.body.classList.add('auth-locked');
+        document.getElementById('post-list').innerHTML = '';
+        document.getElementById('single-post-content').innerHTML = '';
+        document.getElementById('comments-list').innerHTML = '';
+        document.getElementById('auth-error').innerText = message;
+        setTimeout(() => document.getElementById('auth-username').focus(), 0);
+    },
+
+    hideAuthScreen: () => {
+        document.body.classList.remove('auth-locked');
+        document.getElementById('auth-error').innerText = '';
+        document.getElementById('auth-password').value = '';
+    },
+
+    submitAppLogin: async () => {
+        const username = document.getElementById('auth-username').value;
+        const password = document.getElementById('auth-password').value;
+        const submitBtn = document.getElementById('auth-submit-btn');
+
+        if (!username || !password) {
+            document.getElementById('auth-error').innerText = 'Enter username and password.';
+            return;
+        }
+
+        submitBtn.disabled = true;
+        document.getElementById('auth-error').innerText = '';
+
+        try {
+            const res = await fetch(`${API_URL}/login`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password })
+            });
+            const json = await res.json().catch(() => ({}));
+
+            if (!res.ok || !json.success) {
+                document.getElementById('auth-error').innerText = json.error || 'Login failed.';
+                return;
+            }
+
+            app.applySession(json);
+            if (json.role === 'admin') {
+                app.adminPassword = password;
+            }
+            document.getElementById('auth-username').value = '';
+            await app.loadInitialData();
+        } catch (err) {
+            document.getElementById('auth-error').innerText = 'Server connection failed.';
+        } finally {
+            submitBtn.disabled = false;
+        }
     },
 
     // --- Navigation & UI ---
@@ -316,6 +479,67 @@ const app = {
         document.getElementById('admin-password').value = '';
     },
 
+    openAdminMenu: () => {
+        document.getElementById('admin-menu-status').innerText = '';
+        document.getElementById('admin-menu-status').className = 'admin-menu-status';
+        document.getElementById('admin-current-password').value = '';
+        document.getElementById('admin-new-password').value = '';
+        document.getElementById('admin-confirm-password').value = '';
+        document.getElementById('admin-menu-modal').style.display = 'flex';
+        document.getElementById('admin-current-password').focus();
+    },
+
+    closeAdminMenu: () => {
+        document.getElementById('admin-menu-modal').style.display = 'none';
+        document.getElementById('admin-current-password').value = '';
+        document.getElementById('admin-new-password').value = '';
+        document.getElementById('admin-confirm-password').value = '';
+        document.getElementById('admin-menu-status').innerText = '';
+        document.getElementById('admin-menu-status').className = 'admin-menu-status';
+    },
+
+    setAdminMenuStatus: (message, type = 'info') => {
+        const status = document.getElementById('admin-menu-status');
+        status.innerText = message || '';
+        status.className = `admin-menu-status ${type}`;
+    },
+
+    submitPasswordChange: async () => {
+        const target = document.getElementById('admin-password-target').value;
+        const currentAdminPassword = document.getElementById('admin-current-password').value;
+        const newPassword = document.getElementById('admin-new-password').value;
+        const confirmPassword = document.getElementById('admin-confirm-password').value;
+
+        if (!currentAdminPassword || !newPassword || !confirmPassword) {
+            app.setAdminMenuStatus('Fill in all password fields.', 'error');
+            return;
+        }
+        if (newPassword !== confirmPassword) {
+            app.setAdminMenuStatus('New passwords do not match.', 'error');
+            return;
+        }
+
+        try {
+            const json = await app.fetchJson(`${API_URL}/admin/password`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target, currentAdminPassword, newPassword })
+            });
+
+            if (target === 'admin') {
+                app.adminPassword = newPassword;
+            }
+
+            document.getElementById('admin-current-password').value = '';
+            document.getElementById('admin-new-password').value = '';
+            document.getElementById('admin-confirm-password').value = '';
+            app.setAdminMenuStatus(json.target === 'admin' ? 'Admin password changed.' : 'App login password changed.', 'success');
+            app.showToast('Password changed.', 'success');
+        } catch (err) {
+            app.setAdminMenuStatus(err.message || 'Failed to change password.', 'error');
+        }
+    },
+
     submitAdminLogin: async () => {
         const username = document.getElementById('admin-username').value;
         const password = document.getElementById('admin-password').value;
@@ -329,12 +553,10 @@ const app = {
                 body: JSON.stringify({ username, password })
             });
             const json = await res.json();
-            if (json.success) {
+            if (json.success && json.role === 'admin') {
+                app.applySession(json);
                 app.isAdmin = true;
                 app.adminPassword = password;
-                // Persist the admin flag (but never the password) so a refresh
-                // keeps the admin UI; password is restored via re-login.
-                localStorage.setItem('isAdmin', 'true');
                 app.updateAdminUI();
                 app.closeLoginModal();
                 
@@ -345,44 +567,39 @@ const app = {
                 
                 app.showToast("Logged in as admin.", 'success');
             } else {
-                app.showToast("Login failed: " + (json.error || "Invalid credentials"), 'error');
+                app.showToast("Admin credentials required.", 'error');
             }
         } catch (err) {
             app.showToast("Error during login", 'error');
         }
     },
 
-    logout: () => {
+    logout: async () => {
+        try {
+            await fetch(`${API_URL}/logout`, { method: 'POST' });
+        } catch (err) {
+            // Local state is cleared even if the network request fails.
+        }
+
         app.isAdmin = false;
+        app.authenticated = false;
         app.adminPassword = null;
         localStorage.removeItem('isAdmin');
         app.updateAdminUI();
-        
-        // Re-render current post to hide admin buttons
-        if (app.currentPostId) {
-            app.viewPost(app.currentPostId);
-        }
-        
-            app.showToast("Logged out.", 'info');
+        app.currentPostId = null;
+        app.showAuthScreen();
     },
 
     updateAdminUI: () => {
-        const exportBtn = document.getElementById('export-btn');
+        const adminMenuBtn = document.getElementById('admin-menu-btn');
         const loginBtn = document.getElementById('login-btn');
         const logoutBtn = document.getElementById('logout-btn');
         const adminBadge = document.getElementById('admin-badge');
 
-        if (app.isAdmin) {
-            exportBtn.style.display = 'inline-block';
-            logoutBtn.style.display = 'inline-block';
-            loginBtn.style.display = 'none';
-            adminBadge.style.display = 'inline-block';
-        } else {
-            exportBtn.style.display = 'none';
-            logoutBtn.style.display = 'none';
-            loginBtn.style.display = 'inline-block';
-            adminBadge.style.display = 'none';
-        }
+        adminMenuBtn.style.display = app.isAdmin ? 'inline-block' : 'none';
+        logoutBtn.style.display = app.authenticated ? 'inline-block' : 'none';
+        loginBtn.style.display = app.authenticated && !app.isAdmin ? 'inline-block' : 'none';
+        adminBadge.style.display = app.isAdmin ? 'inline-block' : 'none';
     },
 
     // --- API Calls ---
@@ -404,6 +621,15 @@ const app = {
             json = await res.json();
         } catch (e) {
             json = null;
+        }
+
+        if (res.status === 401) {
+            const message = (json && json.error) ? json.error : 'Login required';
+            app.showAuthScreen(message);
+            const error = new Error(message);
+            error.status = res.status;
+            error.body = json;
+            throw error;
         }
 
         if (!res.ok) {
@@ -776,11 +1002,12 @@ const app = {
                     }, 4000);
                 }
             } else {
-                // No file - use simple fetch
+                // No file - use JSON so plain text posts are not treated as uploads.
                 try {
                     const res = await fetch(`${API_URL}/r/${app.currentSub}`, {
                         method: 'POST',
-                        body: formData
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ title, content, author, password })
                     });
 
                     if (res.ok) {
@@ -991,12 +1218,11 @@ const app = {
             return originalImage(token);
         };
 
-        // Parse with marked
-        let html = marked.parse(text, { renderer });
+        // Only convert bare YouTube URLs from the source text so normal links and attributes stay intact.
+        const preparedText = app.embedBareYouTubeUrls(text);
 
-        // YouTube Link Parser (Post-processing)
-        html = html.replace(/(?:https?:\/\/)?(?:www\.)?(?:youtube\.com\/watch\?v=|youtu\.be\/)([\w\-]+)/g,
-            '<div class="video-container"><iframe src="https://www.youtube.com/embed/$1" frameborder="0" allowfullscreen></iframe></div>');
+        // Parse with marked
+        const html = marked.parse(preparedText, { renderer });
 
         // Always sanitize before the result reaches innerHTML.
         return app.sanitizeHtml(html);
@@ -1059,11 +1285,12 @@ const app = {
     },
 
     renderAttachment: (fileUrl, fileType) => {
-        if (!fileUrl) return '';
+        const safeUrl = app.getSafeAttachmentUrl(fileUrl);
+        if (!safeUrl) return '';
         if (fileType && fileType.startsWith('video/')) {
-            return `<video controls src="${fileUrl}" style="max-width:100%; border-radius:4px; margin-bottom:20px;"></video>`;
+            return `<video controls src="${safeUrl}" style="max-width:100%; border-radius:4px; margin-bottom:20px;"></video>`;
         }
-        return `<img src="${fileUrl}" alt="Post attachment" style="max-width:100%; border-radius:4px; margin-bottom:20px;" loading="lazy">`;
+        return `<img src="${safeUrl}" alt="Post attachment" style="max-width:100%; border-radius:4px; margin-bottom:20px;" loading="lazy">`;
     },
 
     renderAttachments: (attachments) => {
@@ -1113,12 +1340,34 @@ const app = {
                 document.getElementById('attachment-field').after(info);
             }
             const info = document.getElementById('existing-attachment');
-            info.innerHTML = `Current attachments:<div style="display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;">${attachments.map((attachment) => {
+            info.replaceChildren();
+            info.appendChild(document.createTextNode('Current attachments:'));
+
+            const previewRow = document.createElement('div');
+            previewRow.style.cssText = 'display:flex; flex-wrap:wrap; gap:8px; margin-top:8px;';
+
+            attachments.forEach((attachment) => {
+                const safeUrl = app.getSafeAttachmentUrl(attachment && attachment.url);
+                if (!safeUrl) return;
+
+                let media;
                 if (attachment.type && attachment.type.startsWith('video/')) {
-                    return `<video controls src="${attachment.url}" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;"></video>`;
+                    media = document.createElement('video');
+                    media.controls = true;
+                    media.src = safeUrl;
+                } else {
+                    media = document.createElement('img');
+                    media.src = safeUrl;
+                    media.alt = 'Current attachment';
                 }
-                return `<img src="${attachment.url}" alt="Current attachment" style="max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;">`;
-            }).join('')}</div>`;
+
+                media.style.cssText = 'max-width:200px; max-height:120px; border-radius:4px; vertical-align:middle;';
+                previewRow.appendChild(media);
+            });
+
+            if (previewRow.childElementCount > 0) {
+                info.appendChild(previewRow);
+            }
         } else if (existingAttach) {
             existingAttach.remove();
         }
@@ -1132,20 +1381,15 @@ const app = {
         if (!confirm("Export all posts to .md files?\n(Files will be saved in the server's exports folder.)")) return;
 
         try {
-            const res = await fetch(`${API_URL}/export`, {
+            const json = await app.fetchJson(`${API_URL}/export`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ adminPassword: app.adminPassword })
+                body: JSON.stringify({})
             });
-            const json = await res.json();
-            
-            if (res.ok) {
-                app.showToast(`Export Complete! ${json.message}`, 'success', 5000);
-            } else {
-                app.showToast("Export Failed: " + (json.error || "Unknown error"), 'error');
-            }
+            app.showToast(`Export Complete! ${json.message}`, 'success', 5000);
+            app.setAdminMenuStatus(`Export complete: ${json.message}`, 'success');
         } catch (err) {
-            app.showToast("Server Connection Error", 'error');
+            app.setAdminMenuStatus(err.message || 'Export failed.', 'error');
             console.error(err);
         }
     },

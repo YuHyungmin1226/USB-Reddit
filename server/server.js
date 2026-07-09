@@ -22,6 +22,32 @@ try {
     process.exit(1);
 }
 
+if (!config.admin || typeof config.admin.username !== 'string' || typeof config.admin.password !== 'string') {
+    console.error('config.json must define admin.username and admin.password as strings.');
+    process.exit(1);
+}
+
+const accessCredentials = getAccessCredentials();
+if (accessCredentials.enabled && isWeakAdminPassword(accessCredentials.password)) {
+    if (config.server && config.server.exposeLan === true) {
+        console.error('Refusing to expose the server on the LAN with a weak app login password.');
+        console.error('Set a stronger access.password in config.json or disable server.exposeLan.');
+        process.exit(1);
+    } else {
+        console.warn('Warning: weak app login password detected. The server will only bind to localhost until you set a stronger password.');
+    }
+}
+
+if (isWeakAdminPassword(config.admin.password)) {
+    if (config.server && config.server.exposeLan === true) {
+        console.error('Refusing to expose the server on the LAN with a weak admin password.');
+        console.error('Set a stronger admin password in config.json or disable server.exposeLan.');
+        process.exit(1);
+    } else {
+        console.warn('Warning: weak admin password detected. The server will only bind to localhost until you set a stronger password.');
+    }
+}
+
 // Password hashing with Node.js built-in scrypt (no external deps)
 function hashPassword(password) {
     const salt = crypto.randomBytes(16).toString('hex');
@@ -30,6 +56,9 @@ function hashPassword(password) {
 }
 
 function verifyAndUpgrade(password, stored, updateFn) {
+    if (typeof password !== 'string' || password.length === 0 || typeof stored !== 'string' || stored.length === 0) {
+        return false;
+    }
     if (!stored || !stored.includes(':')) {
         if (password === stored) {
             if (updateFn) updateFn(hashPassword(password));
@@ -45,13 +74,51 @@ function verifyAndUpgrade(password, stored, updateFn) {
 
 // Timing-safe comparison of the admin password (length-guarded)
 function verifyAdmin(provided) {
+    return verifySecret(provided, config.admin.password);
+}
+
+function verifySecret(provided, expected) {
     if (typeof provided !== 'string') return false;
-    const expected = config.admin.password;
     if (typeof expected !== 'string') return false;
     const a = Buffer.from(provided);
     const b = Buffer.from(expected);
     if (a.length !== b.length) return false;
     return crypto.timingSafeEqual(a, b);
+}
+
+function getAccessCredentials() {
+    const access = config.access && typeof config.access === 'object' ? config.access : {};
+    const username = typeof access.username === 'string' && access.username.trim()
+        ? access.username
+        : config.admin.username;
+    const password = typeof access.password === 'string' && access.password.length > 0
+        ? access.password
+        : config.admin.password;
+
+    return {
+        enabled: access.enabled !== false,
+        username,
+        password
+    };
+}
+
+function syncAccessCredentialsFromConfig() {
+    const latest = getAccessCredentials();
+    accessCredentials.enabled = latest.enabled;
+    accessCredentials.username = latest.username;
+    accessCredentials.password = latest.password;
+}
+
+function hasExplicitAccessPassword() {
+    return Boolean(config.access && typeof config.access.password === 'string' && config.access.password.length > 0);
+}
+
+function writeConfigFile() {
+    fs.writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`, 'utf-8');
+}
+
+function verifyUsername(provided, expected) {
+    return verifySecret(String(provided || ''), expected);
 }
 
 // Dependency-free in-memory rate limiter (per-IP sliding window).
@@ -84,6 +151,15 @@ const sensitiveLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: "요
 
 const SUBREDDIT_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_-]{0,31}$/;
 const RESERVED_SUBREDDITS = new Set(['general', 'random']);
+const DATA_DIR = path.join(__dirname, '../data');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
+const LEGACY_PUBLIC_UPLOADS_DIR = path.join(__dirname, '../public/uploads');
+const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
+const MAX_ATTACHMENTS_PER_POST = 4;
+const MAX_UPLOADS_DIRECTORY_SIZE_BYTES = 1024 * 1024 * 1024;
+const SESSION_COOKIE_NAME = 'usb_reddit_session';
+const SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
+const sessions = new Map();
 
 function normalizeSubredditName(value) {
     return typeof value === 'string' ? value.trim() : '';
@@ -112,10 +188,351 @@ function sanitizePathSegment(value, fallback = 'unknown') {
 }
 
 function cleanupUploadedFiles(files) {
+    const failures = [];
     (files || []).forEach((file) => {
         if (!file || !file.path) return;
-        fs.unlink(file.path, () => {});
+        try {
+            fs.unlinkSync(file.path);
+        } catch (err) {
+            if (err && err.code !== 'ENOENT') {
+                failures.push({ path: file.path, error: err });
+            }
+        }
     });
+    return failures;
+}
+
+function parseCookies(req) {
+    const header = req.headers.cookie;
+    if (!header) return {};
+
+    return header.split(';').reduce((cookies, part) => {
+        const index = part.indexOf('=');
+        if (index === -1) return cookies;
+
+        const name = part.slice(0, index).trim();
+        const value = part.slice(index + 1).trim();
+        if (!name) return cookies;
+
+        try {
+            cookies[name] = decodeURIComponent(value);
+        } catch (err) {
+            cookies[name] = value;
+        }
+        return cookies;
+    }, {});
+}
+
+function createSession(role) {
+    cleanupExpiredSessions();
+    const token = crypto.randomBytes(32).toString('hex');
+    sessions.set(token, {
+        role,
+        expiresAt: Date.now() + SESSION_DURATION_MS
+    });
+    return token;
+}
+
+function cleanupExpiredSessions() {
+    const now = Date.now();
+    for (const [token, session] of sessions) {
+        if (!session || session.expiresAt <= now) {
+            sessions.delete(token);
+        }
+    }
+}
+
+function setSessionCookie(res, token) {
+    const maxAge = Math.floor(SESSION_DURATION_MS / 1000);
+    res.setHeader('Set-Cookie', `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`);
+}
+
+function clearSessionCookie(res) {
+    res.setHeader('Set-Cookie', `${SESSION_COOKIE_NAME}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
+}
+
+function attachSession(req, res, next) {
+    const cookies = parseCookies(req);
+    const token = cookies[SESSION_COOKIE_NAME];
+    const session = token ? sessions.get(token) : null;
+
+    if (session && session.expiresAt > Date.now()) {
+        req.sessionToken = token;
+        req.session = session;
+    } else if (token) {
+        sessions.delete(token);
+    }
+
+    next();
+}
+
+function requireAuth(req, res, next) {
+    if (!accessCredentials.enabled || req.session) {
+        return next();
+    }
+
+    return res.status(401).json({ error: "Login required" });
+}
+
+function requireUploadAuth(req, res, next) {
+    if (!accessCredentials.enabled || req.session) {
+        return next();
+    }
+
+    return res.status(401).send("Login required");
+}
+
+function isUploadRequestPath(req) {
+    const rawPath = String((req.path || req.url || '').split('?')[0]);
+    const paths = [rawPath];
+    try {
+        paths.push(decodeURIComponent(rawPath));
+    } catch (err) {}
+
+    return paths.some((candidate) => {
+        const normalized = candidate.replace(/\\/g, '/');
+        return normalized === '/uploads' || normalized.startsWith('/uploads/');
+    });
+}
+
+function blockUploadFallback(req, res, next) {
+    if (!isUploadRequestPath(req)) return next();
+
+    if (accessCredentials.enabled && !req.session) {
+        return res.status(401).send("Login required");
+    }
+
+    return res.status(404).send('Not found');
+}
+
+function isAdminRequest(req) {
+    return Boolean(req.session && req.session.role === 'admin') || verifyAdmin(req.body && req.body.adminPassword);
+}
+
+function isLanExposureEnabled() {
+    return Boolean(config && config.server && config.server.exposeLan === true);
+}
+
+function getListenHost() {
+    return isLanExposureEnabled() ? '0.0.0.0' : '127.0.0.1';
+}
+
+function isWeakAdminPassword(value) {
+    return typeof value !== 'string' || value.trim().length < 8 || ['CHANGE_ME', 'admin', 'admin123', 'password', '123456'].includes(value);
+}
+
+function getDirectorySize(rootPath) {
+    if (!fs.existsSync(rootPath)) return 0;
+
+    let total = 0;
+    const pending = [rootPath];
+    while (pending.length > 0) {
+        const current = pending.pop();
+        let entries = [];
+        try {
+            entries = fs.readdirSync(current, { withFileTypes: true });
+        } catch (err) {
+            continue;
+        }
+
+        entries.forEach((entry) => {
+            const entryPath = path.join(current, entry.name);
+            if (entry.isDirectory()) {
+                pending.push(entryPath);
+                return;
+            }
+            if (!entry.isFile()) return;
+            try {
+                total += fs.statSync(entryPath).size;
+            } catch (err) {}
+        });
+    }
+    return total;
+}
+
+function uploadPathFromUrl(urlValue) {
+    if (typeof urlValue !== 'string' || !urlValue.trim()) return null;
+    try {
+        const parsed = new URL(urlValue, 'http://localhost');
+        const pathname = decodeURIComponent(parsed.pathname);
+        if (!pathname.startsWith('/uploads/')) return null;
+
+        const uploadsRoot = path.resolve(UPLOADS_DIR);
+        const relativeName = pathname.slice('/uploads/'.length);
+        if (!relativeName || relativeName.includes('\0')) return null;
+
+        const resolved = path.resolve(UPLOADS_DIR, relativeName);
+        if (resolved !== uploadsRoot && !resolved.startsWith(`${uploadsRoot}${path.sep}`)) {
+            return null;
+        }
+        return resolved;
+    } catch (err) {
+        return null;
+    }
+}
+
+function collectUploadPaths(posts) {
+    const paths = new Set();
+    (posts || []).forEach((post) => {
+        attachmentsForPost(post).forEach((attachment) => {
+            const localPath = uploadPathFromUrl(attachment.url);
+            if (localPath) paths.add(localPath);
+        });
+    });
+    return [...paths];
+}
+
+function deleteUploadPaths(paths) {
+    const failures = [];
+    (paths || []).forEach((targetPath) => {
+        if (!targetPath) return;
+        try {
+            fs.unlinkSync(targetPath);
+        } catch (err) {
+            if (err && err.code !== 'ENOENT') {
+                failures.push({ path: targetPath, error: err });
+            }
+        }
+    });
+    return failures;
+}
+
+function moveFileAcrossDevices(sourcePath, targetPath) {
+    try {
+        fs.renameSync(sourcePath, targetPath);
+    } catch (err) {
+        if (!err || err.code !== 'EXDEV') throw err;
+        fs.copyFileSync(sourcePath, targetPath);
+        fs.unlinkSync(sourcePath);
+    }
+}
+
+function migrateLegacyUploads() {
+    if (!fs.existsSync(LEGACY_PUBLIC_UPLOADS_DIR)) return;
+    fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+    let entries = [];
+    try {
+        entries = fs.readdirSync(LEGACY_PUBLIC_UPLOADS_DIR, { withFileTypes: true });
+    } catch (err) {
+        console.warn(`Could not read legacy upload directory: ${err.message}`);
+        return;
+    }
+
+    entries.forEach((entry) => {
+        if (!entry.isFile() || entry.name === '.gitkeep') return;
+
+        const sourcePath = path.join(LEGACY_PUBLIC_UPLOADS_DIR, entry.name);
+        const targetPath = path.join(UPLOADS_DIR, entry.name);
+        if (fs.existsSync(targetPath)) {
+            console.warn(`Skipping legacy upload migration for ${entry.name}: data/uploads already has that file name.`);
+            return;
+        }
+
+        try {
+            moveFileAcrossDevices(sourcePath, targetPath);
+        } catch (err) {
+            console.warn(`Could not migrate upload ${entry.name}: ${err.message}`);
+        }
+    });
+}
+
+function fileHasExpectedSignature(filePath, mimeType) {
+    const bytes = Buffer.alloc(32);
+    let fd;
+    let bytesRead = 0;
+    try {
+        fd = fs.openSync(filePath, 'r');
+        bytesRead = fs.readSync(fd, bytes, 0, bytes.length, 0);
+    } catch (err) {
+        return false;
+    } finally {
+        if (typeof fd === 'number') {
+            try { fs.closeSync(fd); } catch (closeErr) {}
+        }
+    }
+
+    const header = bytes.subarray(0, bytesRead);
+    const ascii = header.toString('ascii');
+    const hex = header.toString('hex');
+
+    switch (mimeType) {
+        case 'image/png':
+            return hex.startsWith('89504e470d0a1a0a');
+        case 'image/jpeg':
+        case 'image/jpg':
+            return hex.startsWith('ffd8ff');
+        case 'image/gif':
+            return ascii.startsWith('GIF87a') || ascii.startsWith('GIF89a');
+        case 'image/webp':
+            return ascii.startsWith('RIFF') && header.subarray(8, 12).toString('ascii') === 'WEBP';
+        case 'image/bmp':
+            return ascii.startsWith('BM');
+        case 'video/mp4':
+        case 'video/quicktime':
+            return header.subarray(4, 8).toString('ascii') === 'ftyp';
+        case 'video/webm':
+            return hex.startsWith('1a45dfa3');
+        case 'video/ogg':
+            return ascii.startsWith('OggS');
+        default:
+            return false;
+    }
+}
+
+function limitFileComponent(value, fallback, maxLength = 80) {
+    const cleaned = sanitizePathSegment(value, fallback);
+    return cleaned.slice(0, maxLength) || fallback;
+}
+
+function yamlQuoted(value) {
+    return JSON.stringify(String(value ?? ''));
+}
+
+function sanitizeHeading(value, fallback = 'Untitled') {
+    const singleLine = String(value ?? '').replace(/\r?\n+/g, ' ').trim();
+    return singleLine || fallback;
+}
+
+function normalizeCreatePostPayload(body) {
+    const source = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+    const pickString = (value, fieldName, fallback = '') => {
+        if (value === undefined || value === null) return { value: fallback };
+        if (typeof value !== 'string') {
+            return { error: `${fieldName} must be a string.` };
+        }
+        return { value };
+    };
+
+    const titleResult = pickString(source.title, 'title', '');
+    if (titleResult.error) return titleResult;
+
+    const contentResult = pickString(source.content, 'content', '');
+    if (contentResult.error) return contentResult;
+
+    const authorResult = pickString(source.author, 'author', 'Anonymous');
+    if (authorResult.error) return authorResult;
+
+    const passwordResult = pickString(source.password, 'password', '');
+    if (passwordResult.error) return passwordResult;
+
+    if (passwordResult.value.trim() === '') {
+        return { error: 'Password is required.' };
+    }
+
+    return {
+        value: {
+            title: titleResult.value,
+            content: contentResult.value,
+            author: authorResult.value.trim() || 'Anonymous',
+            password: passwordResult.value
+        }
+    };
+}
+
+function cleanupOrphanVotes() {
+    db.run("DELETE FROM votes WHERE target_type = 'post' AND target_id NOT IN (SELECT id FROM posts)");
+    db.run("DELETE FROM votes WHERE target_type = 'comment' AND target_id NOT IN (SELECT id FROM comments)");
 }
 
 function getLocalAddress() {
@@ -132,11 +549,60 @@ function getLocalAddress() {
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+migrateLegacyUploads();
 
 // Middleware
 // Frontend is served from the same origin via express.static, so wide-open
 // CORS is unnecessary. Allow same-origin only (no cross-origin headers).
 app.use(bodyParser.json());
+app.use(attachSession);
+
+app.get('/api/session', (req, res) => {
+    if (!accessCredentials.enabled) {
+        return res.json({ authenticated: true, accessEnabled: false, role: 'user' });
+    }
+
+    if (!req.session) {
+        return res.status(401).json({ authenticated: false, accessEnabled: true, error: "Login required" });
+    }
+
+    return res.json({ authenticated: true, accessEnabled: true, role: req.session.role });
+});
+
+app.post('/api/login', loginLimiter, (req, res) => {
+    const { username, password } = req.body || {};
+    const isAdmin = verifyUsername(username, config.admin.username) && verifyAdmin(password);
+    const isAccessUser = accessCredentials.enabled &&
+        verifyUsername(username, accessCredentials.username) &&
+        verifySecret(password, accessCredentials.password);
+
+    if (!accessCredentials.enabled || isAdmin || isAccessUser) {
+        const role = isAdmin ? 'admin' : 'user';
+        const token = createSession(role);
+        setSessionCookie(res, token);
+        return res.json({ success: true, authenticated: true, role });
+    }
+
+    return res.status(401).json({ success: false, error: "Invalid credentials" });
+});
+
+app.post('/api/logout', (req, res) => {
+    if (req.sessionToken) {
+        sessions.delete(req.sessionToken);
+    }
+    clearSessionCookie(res);
+    res.json({ success: true });
+});
+
+app.use('/api', requireAuth);
+app.use('/uploads', requireUploadAuth, express.static(UPLOADS_DIR, {
+    setHeaders: (res) => {
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+    }
+}), (req, res) => {
+    res.status(404).send('Not found');
+});
+app.use(blockUploadFallback);
 app.use(express.static(path.join(__dirname, '../public'), {
     setHeaders: (res) => {
         res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -144,7 +610,7 @@ app.use(express.static(path.join(__dirname, '../public'), {
 }));
 
 // Database Setup
-const dbDir = path.join(__dirname, '../data');
+const dbDir = DATA_DIR;
 if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
 }
@@ -212,6 +678,7 @@ function initDb() {
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )`);
         db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_votes_unique ON votes(target_type, target_id, user_ip)`);
+        cleanupOrphanVotes();
 
         // Seed default subreddit if empty
         db.get("SELECT count(*) as count FROM subreddits", (err, row) => {
@@ -314,7 +781,7 @@ app.post('/api/subreddits', (req, res) => {
 // 2.1 Delete subreddit
 app.delete('/api/subreddits/:id', sensitiveLimiter, (req, res) => {
     const subId = req.params.id;
-    const { password, adminPassword } = req.body;
+    const { password } = req.body;
 
     db.get("SELECT name, password FROM subreddits WHERE id = ?", [subId], (err, row) => {
         if (err || !row) return res.status(404).json({ error: "Subreddit not found" });
@@ -322,19 +789,24 @@ app.delete('/api/subreddits/:id', sensitiveLimiter, (req, res) => {
             return res.status(403).json({ error: "Reserved subreddits cannot be deleted" });
         }
 
-        // Admin can bypass subreddit password
-        if (adminPassword && verifyAdmin(adminPassword)) {
-            return deleteSubreddit(res);
-        }
+        db.all("SELECT file_url, file_type, attachments FROM posts WHERE subreddit_id = ?", [subId], (postErr, postRows) => {
+            if (postErr) return res.status(500).json({ error: postErr.message });
+            const uploadPaths = collectUploadPaths(postRows);
 
-        if (!verifyAndUpgrade(password, row.password, (h) => db.run("UPDATE subreddits SET password = ? WHERE id = ?", [h, subId]))) {
-            return res.status(403).json({ error: "Incorrect password" });
-        }
+            // Admin can bypass subreddit password
+            if (isAdminRequest(req)) {
+                return deleteSubreddit(res, uploadPaths);
+            }
 
-        deleteSubreddit(res);
+            if (!verifyAndUpgrade(password, row.password, (h) => db.run("UPDATE subreddits SET password = ? WHERE id = ?", [h, subId]))) {
+                return res.status(403).json({ error: "Incorrect password" });
+            }
+
+            deleteSubreddit(res, uploadPaths);
+        });
     });
 
-    function deleteSubreddit(response) {
+    function deleteSubreddit(response, uploadPaths = []) {
         db.serialize(() => {
             db.run("BEGIN");
             const fail = (err) => {
@@ -345,19 +817,26 @@ app.delete('/api/subreddits/:id', sensitiveLimiter, (req, res) => {
             // but we delete explicitly to keep behaviour deterministic.
             db.run("DELETE FROM votes WHERE target_type='post' AND target_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
                 if (e) return fail(e);
-                db.run("DELETE FROM comments WHERE post_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
+                db.run("DELETE FROM votes WHERE target_type='comment' AND target_id IN (SELECT id FROM comments WHERE post_id IN (SELECT id FROM posts WHERE subreddit_id = ?))", [subId], (e) => {
                     if (e) return fail(e);
-                    db.run("DELETE FROM posts WHERE subreddit_id = ?", [subId], (e) => {
+                    db.run("DELETE FROM comments WHERE post_id IN (SELECT id FROM posts WHERE subreddit_id = ?)", [subId], (e) => {
                         if (e) return fail(e);
-                        db.run("DELETE FROM subreddits WHERE id = ?", [subId], (e) => {
+                        db.run("DELETE FROM posts WHERE subreddit_id = ?", [subId], (e) => {
                             if (e) return fail(e);
-                            db.run("COMMIT", (e) => {
-                                if (e) return fail(e);
-                                response.json({ message: "Subreddit deleted" });
+                                db.run("DELETE FROM subreddits WHERE id = ?", [subId], (e) => {
+                                    if (e) return fail(e);
+                                    db.run("COMMIT", (e) => {
+                                        if (e) return fail(e);
+                                        const cleanupFailures = deleteUploadPaths(uploadPaths);
+                                        if (cleanupFailures.length > 0) {
+                                            return response.status(500).json({ error: "Subreddit data was deleted, but one or more attachment files could not be removed." });
+                                        }
+                                        response.json({ message: "Subreddit deleted" });
+                                    });
+                                });
                             });
                         });
                     });
-                });
             });
         });
     }
@@ -425,11 +904,10 @@ const MIME_EXT_MAP = {
 // Configure Multer for file uploads
 const storage = multer.diskStorage({
     destination: (req, file, cb) => {
-        const uploadDir = path.join(__dirname, '../public/uploads');
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
+        if (!fs.existsSync(UPLOADS_DIR)) {
+            fs.mkdirSync(UPLOADS_DIR, { recursive: true });
         }
-        cb(null, uploadDir);
+        cb(null, UPLOADS_DIR);
     },
     filename: (req, file, cb) => {
         // Re-issue a safe extension based on MIME type, never the original name.
@@ -448,21 +926,18 @@ function fileFilter(req, file, cb) {
 }
 
 function safeFileFilter(req, file, cb) {
-    const isImage = /^image\//.test(file.mimetype);
-    const isVideo = /^video\//.test(file.mimetype);
-    const isSvg = file.mimetype === 'image/svg+xml';
-    if ((isImage || isVideo) && !isSvg) {
+    if (Object.prototype.hasOwnProperty.call(MIME_EXT_MAP, file.mimetype)) {
         return cb(null, true);
     }
-    cb(new Error("Only non-SVG image and video files can be uploaded."), false);
+    cb(new Error("Only supported image and video file types can be uploaded."), false);
 }
 
 const upload = multer({
     storage: storage,
     fileFilter: safeFileFilter,
     limits: {
-        fileSize: 50 * 1024 * 1024, // 50MB per file
-        files: 10
+        fileSize: MAX_ATTACHMENT_SIZE_BYTES,
+        files: MAX_ATTACHMENTS_PER_POST
     }
 });
 
@@ -493,20 +968,44 @@ function safeUploadAttachments(req, res, next) {
     });
 }
 
-// 4. Create post (with optional file attachments)
-app.post('/api/r/:subreddit_name', sensitiveLimiter, safeUploadAttachments, (req, res) => {
-    const subName = req.params.subreddit_name;
+function enforceProjectedUploadQuota(req, res, next) {
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    if (!contentType.startsWith('multipart/form-data')) {
+        return next();
+    }
 
-    let { title, content, author, password } = req.body;
+    const contentLength = Number.parseInt(String(req.headers['content-length'] || ''), 10);
+    if (!Number.isFinite(contentLength) || contentLength <= 0) {
+        return res.status(411).json({ error: "A valid Content-Length header is required for uploads." });
+    }
+
+    if (getDirectorySize(UPLOADS_DIR) + contentLength > MAX_UPLOADS_DIRECTORY_SIZE_BYTES) {
+        return res.status(413).json({ error: "Upload storage quota exceeded. Remove older uploads before adding more files." });
+    }
+
+    next();
+}
+
+// 4. Create post (with optional file attachments)
+app.post('/api/r/:subreddit_name', sensitiveLimiter, enforceProjectedUploadQuota, safeUploadAttachments, (req, res) => {
+    const subName = req.params.subreddit_name;
     const fail = (status, message) => {
-        cleanupUploadedFiles(req.files);
+        const cleanupFailures = cleanupUploadedFiles(req.files);
+        if (cleanupFailures.length > 0) {
+            return res.status(500).json({
+                error: "Upload cleanup failed. Check data/uploads and available disk space."
+            });
+        }
         return res.status(status).json(typeof message === 'string' ? { error: message } : message);
     };
+    const payload = normalizeCreatePostPayload(req.body);
+    if (payload.error) return fail(400, payload.error);
+
+    let { title, content, author, password } = payload.value;
 
     db.get("SELECT id FROM subreddits WHERE name = ?", [subName], (lookupErr, sub) => {
         if (lookupErr) return fail(500, lookupErr.message);
         if (!sub) return fail(404, "Subreddit not found");
-        if (!password) return fail(400, "Password is required.");
 
         // Default title: YYYY-MM-DD HH:MM:SS in Asia/Seoul.
         if (!title || title.trim() === '') {
@@ -519,8 +1018,13 @@ app.post('/api/r/:subreddit_name', sensitiveLimiter, safeUploadAttachments, (req
                 String(now.getSeconds()).padStart(2, '0');
         }
 
-        // Ensure content is string (it might be undefined if empty form data)
-        content = content || '';
+        const invalidUpload = (req.files || []).find((file) => !fileHasExpectedSignature(file.path, file.mimetype));
+        if (invalidUpload) {
+            return fail(400, "One or more uploaded files do not match their declared file type.");
+        }
+        if ((req.files || []).length > 0 && getDirectorySize(UPLOADS_DIR) > MAX_UPLOADS_DIRECTORY_SIZE_BYTES) {
+            return fail(413, "Upload storage quota exceeded. Remove older uploads before adding more files.");
+        }
 
         const attachments = (req.files || []).map(file => ({
             url: `/uploads/${file.filename}`,
@@ -563,51 +1067,90 @@ app.get('/api/posts/:id', (req, res) => {
 app.post('/api/comments', (req, res) => {
     const { post_id, parent_id, content, author } = req.body;
     if (!post_id || !content || (typeof content === 'string' && content.trim() === '')) {
-        return res.status(400).json({ error: "post_id와 content는 필수입니다." });
+        return res.status(400).json({ error: "post_id and non-empty content are required" });
     }
-    db.run("INSERT INTO comments (post_id, parent_id, content, author) VALUES (?, ?, ?, ?)",
-        [post_id, parent_id, content, author], function (err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ id: this.lastID });
+    return db.get("SELECT id FROM posts WHERE id = ?", [post_id], (postErr, postRow) => {
+        if (postErr) return res.status(500).json({ error: postErr.message });
+        if (!postRow) return res.status(404).json({ error: "Post not found" });
+
+        const insertComment = () => {
+            db.run("INSERT INTO comments (post_id, parent_id, content, author) VALUES (?, ?, ?, ?)",
+                [post_id, parent_id || null, content, author], function (insertErr) {
+                    if (insertErr) return res.status(500).json({ error: insertErr.message });
+                    res.json({ id: this.lastID });
+                });
+        };
+
+        if (!parent_id) {
+            return insertComment();
+        }
+
+        db.get("SELECT id, post_id FROM comments WHERE id = ?", [parent_id], (parentErr, parentRow) => {
+            if (parentErr) return res.status(500).json({ error: parentErr.message });
+            if (!parentRow) return res.status(404).json({ error: "Parent comment not found" });
+            if (Number(parentRow.post_id) !== Number(post_id)) {
+                return res.status(400).json({ error: "Parent comment must belong to the same post" });
+            }
+
+            insertComment();
         });
+    });
 });
 
 // 6.1 Delete comment (Admin only)
 app.delete('/api/comments/:id', sensitiveLimiter, (req, res) => {
     const commentId = req.params.id;
-    const { adminPassword } = req.body;
 
-    if (!verifyAdmin(adminPassword)) {
+    if (!isAdminRequest(req)) {
         return res.status(403).json({ error: "Admin access required" });
     }
 
-    db.run("DELETE FROM comments WHERE id = ?", [commentId], function (err) {
-        if (err) return res.status(500).json({ error: err.message });
-        res.json({ message: "Comment deleted successfully" });
+    db.serialize(() => {
+        db.run("BEGIN");
+        const fail = (err) => {
+            db.run("ROLLBACK");
+            return res.status(500).json({ error: err.message });
+        };
+
+        db.run("DELETE FROM votes WHERE target_type='comment' AND target_id = ?", [commentId], (voteErr) => {
+            if (voteErr) return fail(voteErr);
+            db.run("DELETE FROM comments WHERE id = ?", [commentId], function (err) {
+                if (err) return fail(err);
+                if (this.changes === 0) {
+                    db.run("ROLLBACK");
+                    return res.status(404).json({ error: "Comment not found" });
+                }
+                db.run("COMMIT", (commitErr) => {
+                    if (commitErr) return fail(commitErr);
+                    res.json({ message: "Comment deleted successfully" });
+                });
+            });
+        });
     });
 });
 
 // 7. Delete post (with password check or admin bypass)
 app.delete('/api/posts/:id', sensitiveLimiter, (req, res) => {
     const postId = req.params.id;
-    const { password, adminPassword } = req.body;
+    const { password } = req.body;
 
-    db.get("SELECT password FROM posts WHERE id = ?", [postId], (err, row) => {
+    db.get("SELECT password, file_url, file_type, attachments FROM posts WHERE id = ?", [postId], (err, row) => {
         if (err || !row) return res.status(404).json({ error: "Post not found" });
+        const uploadPaths = collectUploadPaths([row]);
 
         // Admin can bypass post password
-        if (adminPassword && verifyAdmin(adminPassword)) {
-            return deletePost(postId, res);
+        if (isAdminRequest(req)) {
+            return deletePost(postId, res, uploadPaths);
         }
 
         if (!verifyAndUpgrade(password, row.password, (h) => db.run("UPDATE posts SET password = ? WHERE id = ?", [h, postId]))) {
             return res.status(403).json({ error: "Incorrect password" });
         }
 
-        deletePost(postId, res);
+        deletePost(postId, res, uploadPaths);
     });
 
-    function deletePost(id, response) {
+    function deletePost(id, response, uploadPaths = []) {
         db.serialize(() => {
             db.run("BEGIN");
             const fail = (err) => {
@@ -615,15 +1158,22 @@ app.delete('/api/posts/:id', sensitiveLimiter, (req, res) => {
                 return response.status(500).json({ error: err.message });
             };
             // comments cascade via FK; votes have no FK so delete manually.
-            db.run("DELETE FROM comments WHERE post_id = ?", [id], (e) => {
+            db.run("DELETE FROM votes WHERE target_type='comment' AND target_id IN (SELECT id FROM comments WHERE post_id = ?)", [id], (e) => {
                 if (e) return fail(e);
-                db.run("DELETE FROM votes WHERE target_type='post' AND target_id=?", [id], (e) => {
+                db.run("DELETE FROM comments WHERE post_id = ?", [id], (e) => {
                     if (e) return fail(e);
-                    db.run("DELETE FROM posts WHERE id = ?", [id], (e) => {
+                    db.run("DELETE FROM votes WHERE target_type='post' AND target_id=?", [id], (e) => {
                         if (e) return fail(e);
-                        db.run("COMMIT", (e) => {
+                        db.run("DELETE FROM posts WHERE id = ?", [id], (e) => {
                             if (e) return fail(e);
-                            response.json({ message: "Deleted successfully" });
+                            db.run("COMMIT", (e) => {
+                                if (e) return fail(e);
+                                const cleanupFailures = deleteUploadPaths(uploadPaths);
+                                if (cleanupFailures.length > 0) {
+                                    return response.status(500).json({ error: "Post data was deleted, but one or more attachment files could not be removed." });
+                                }
+                                response.json({ message: "Deleted successfully" });
+                            });
                         });
                     });
                 });
@@ -635,10 +1185,10 @@ app.delete('/api/posts/:id', sensitiveLimiter, (req, res) => {
 // 7.1 Update post (with password check or admin bypass)
 app.put('/api/posts/:id', sensitiveLimiter, (req, res) => {
     const postId = req.params.id;
-    const { title, content, password, adminPassword } = req.body;
+    const { title, content, password } = req.body;
 
     // Admin can bypass post password
-    const isAdmin = adminPassword && verifyAdmin(adminPassword);
+    const isAdmin = isAdminRequest(req);
 
     if (!password && !isAdmin) {
         return res.status(400).json({ error: "Password is required" });
@@ -700,21 +1250,59 @@ app.post('/api/vote', (req, res) => {
     });
 });
 
-// 7.3 Admin Login (timing-safe compare + rate limited)
-app.post('/api/login', loginLimiter, (req, res) => {
-    const { username, password } = req.body;
-    if (username === config.admin.username && verifyAdmin(password)) {
-        res.json({ success: true, message: "Logged in as admin" });
-    } else {
-        res.status(401).json({ success: false, error: "Invalid credentials" });
+// 7.3 Change access/admin passwords from the admin menu
+app.post('/api/admin/password', sensitiveLimiter, (req, res) => {
+    if (!isAdminRequest(req)) {
+        return res.status(403).json({ error: "Admin access required" });
+    }
+
+    const { target, currentAdminPassword, newPassword } = req.body || {};
+    if (!['access', 'admin'].includes(target)) {
+        return res.status(400).json({ error: "target must be 'access' or 'admin'" });
+    }
+    if (!verifyAdmin(currentAdminPassword)) {
+        return res.status(403).json({ error: "Current admin password is incorrect" });
+    }
+    if (typeof newPassword !== 'string' || newPassword.trim() !== newPassword || newPassword.length === 0) {
+        return res.status(400).json({ error: "New password must be a non-empty string without leading or trailing spaces" });
+    }
+    if (isWeakAdminPassword(newPassword)) {
+        return res.status(400).json({ error: "New password must be at least 8 characters and cannot be a common default" });
+    }
+
+    const previousConfig = JSON.parse(JSON.stringify(config));
+    try {
+        if (target === 'admin') {
+            const accessWasImplicit = !hasExplicitAccessPassword();
+            config.admin.password = newPassword;
+            if (accessWasImplicit) {
+                accessCredentials.password = newPassword;
+            }
+        } else {
+            if (!config.access || typeof config.access !== 'object') {
+                config.access = {};
+            }
+            config.access.enabled = true;
+            if (typeof config.access.username !== 'string' || !config.access.username.trim()) {
+                config.access.username = accessCredentials.username || config.admin.username;
+            }
+            config.access.password = newPassword;
+        }
+
+        writeConfigFile();
+        syncAccessCredentialsFromConfig();
+        return res.json({ success: true, target });
+    } catch (err) {
+        config = previousConfig;
+        syncAccessCredentialsFromConfig();
+        return res.status(500).json({ error: `Failed to update config.json: ${err.message}` });
     }
 });
 
 // 8. Export all posts to Markdown files
 app.post('/api/export', (req, res) => {
     // Basic protection (optional but good practice)
-    const { adminPassword } = req.body;
-    if (!verifyAdmin(adminPassword)) {
+    if (!isAdminRequest(req)) {
         return res.status(403).json({ error: "Admin access required" });
     }
 
@@ -752,11 +1340,9 @@ app.post('/api/export', (req, res) => {
 
             // Guard against null/empty title to avoid crashes
             const rawTitle = post.title || '';
-            let safeTitle = rawTitle.replace(/[\/\?<>\\:\*\|"]/g, '_').trim();
-            if (!safeTitle) safeTitle = 'unnamed_post';
-
-            let safeDate = post.created_at ? post.created_at.substring(0, 10).replace(/[: ]/g, '-') : 'unknown-date';
-            let safeAuthor = post.author ? post.author.replace(/[\/\?<>\\:\*\|"]/g, '_') : 'unknown';
+            const safeTitle = limitFileComponent(rawTitle, 'unnamed_post');
+            const safeDate = limitFileComponent(post.created_at ? post.created_at.substring(0, 10).replace(/[: ]/g, '-') : 'unknown-date', 'unknown-date', 32);
+            const safeAuthor = limitFileComponent(post.author || 'unknown', 'unknown', 48);
 
             // Include post.id to prevent overwriting files with identical names
             const fileName = `${safeTitle}_${safeDate}_${safeAuthor}_${post.id}.md`;
@@ -766,15 +1352,16 @@ app.post('/api/export', (req, res) => {
             const cleanContent = stripAttachmentMarkers(post.content || '', normalizedPost.attachments);
             const attachmentBlock = normalizedPost.attachments.map(attachmentMarkdown).join('\n\n');
             const bodyContent = attachmentBlock ? `${cleanContent}\n\n${attachmentBlock}` : cleanContent;
+            const titleHeading = sanitizeHeading(rawTitle, 'Untitled');
 
             const mdContent = `---
-title: "${rawTitle.replace(/"/g, '\\"')}"
-author: "${post.author || ''}"
-subreddit: "r/${subName}"
-date: "${post.created_at || ''}"
+title: ${yamlQuoted(rawTitle)}
+author: ${yamlQuoted(post.author || '')}
+subreddit: ${yamlQuoted(`r/${subName}`)}
+date: ${yamlQuoted(post.created_at || '')}
 ---
 
-# ${rawTitle}
+# ${titleHeading}
 
 ${bodyContent}
 `;
@@ -798,14 +1385,18 @@ ${bodyContent}
 });
 
 // Start Server
-const server = app.listen(PORT, '0.0.0.0', () => {
+const listenHost = getListenHost();
+const server = app.listen(PORT, listenHost, () => {
     const localIp = getLocalAddress();
+    const networkLine = isLanExposureEnabled()
+        ? `      - Network: http://${localIp}:${PORT}`
+        : '      - Network: disabled by default (set server.exposeLan=true in config.json)';
     console.log(`
     ===========================================
       USB Reddit Server Running!
     ===========================================
       - Local:   http://localhost:${PORT}
-      - Network: http://${localIp}:${PORT}
+${networkLine}
     ===========================================
     `);
 });

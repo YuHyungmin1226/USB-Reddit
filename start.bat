@@ -78,8 +78,8 @@ if not exist "node_modules\.os_win" (
 
 REM 3. Ensure necessary directories exist
 if not exist "data" mkdir "data"
+if not exist "data\uploads" mkdir "data\uploads"
 if not exist "exports" mkdir "exports"
-if not exist "public\uploads" mkdir "public\uploads"
 
 REM 4. Launch Server
 echo %BLUE%[Info] Launching Server...%NC%

@@ -2,5 +2,13 @@
   "admin": {
     "username": "admin",
     "password": "CHANGE_ME"
+  },
+  "access": {
+    "enabled": true,
+    "username": "reader",
+    "password": "CHANGE_ME_TOO"
+  },
+  "server": {
+    "exposeLan": false
   }
 }

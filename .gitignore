@@ -8,17 +8,15 @@ bin/node-darwin-x64
 !bin/*.tar.gz
 !bin/*.exe
 
-# SQLite database
-data/*.db
-data/*.sqlite
+# Runtime database and local state
+data/
 
 # Exports
 exports/*
 !exports/.gitkeep
 
-# User Uploads
-public/uploads/*
-!public/uploads/.gitkeep
+# User uploads
+public/uploads/
 
 # Logs
 logs

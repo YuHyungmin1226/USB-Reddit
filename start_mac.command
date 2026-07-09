@@ -101,7 +101,7 @@ fi
 touch "node_modules/$MARKER"
 
 # 3. Ensure necessary directories exist
-mkdir -p data exports public/uploads
+mkdir -p data/uploads exports
 
 # 4. Run Server
 echo -e "${BLUE}[Info] Launching Server...${NC}"

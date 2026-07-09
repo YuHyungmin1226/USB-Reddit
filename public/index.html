@@ -8,7 +8,17 @@
     <link rel="stylesheet" href="style.css">
 </head>
 
-<body>
+<body class="auth-locked">
+
+    <div id="auth-screen" class="auth-screen">
+        <div class="auth-panel">
+            <h2>USB Reddit</h2>
+            <input type="text" id="auth-username" placeholder="Username" autocomplete="username">
+            <input type="password" id="auth-password" placeholder="Password" autocomplete="current-password" onkeyup="if(event.key==='Enter') app.submitAppLogin()">
+            <button id="auth-submit-btn" class="primary-btn" onclick="app.submitAppLogin()">Login</button>
+            <div id="auth-error" class="auth-error"></div>
+        </div>
+    </div>
 
     <div class="container">
         <header>
@@ -22,8 +32,8 @@
                     style="padding: 5px 10px; font-size: 0.8rem;">Admin Login</button>
                 <button id="logout-btn" onclick="app.logout()" class="primary-btn"
                     style="padding: 5px 10px; font-size: 0.8rem; display: none;">Logout</button>
-                <button id="export-btn" onclick="app.exportAllToMd()" class="primary-btn"
-                    style="padding: 5px 10px; font-size: 0.8rem; display: none;">Export MD</button>
+                <button id="admin-menu-btn" onclick="app.openAdminMenu()" class="primary-btn"
+                    style="padding: 5px 10px; font-size: 0.8rem; display: none;">Admin Menu</button>
             </div>
         </header>
 
@@ -84,6 +94,33 @@
                     <button class="primary-btn" onclick="app.submitComment()">Comment</button>
                 </div>
                 <div id="comments-list"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Admin Menu Modal -->
+    <div id="admin-menu-modal" class="modal-overlay">
+        <div class="modal-content admin-menu-content">
+            <h3>Admin Menu</h3>
+            <div class="admin-menu-section">
+                <h4>Export</h4>
+                <button class="primary-btn" onclick="app.exportAllToMd()">Export Markdown</button>
+            </div>
+            <div class="admin-menu-section">
+                <h4>Change Password</h4>
+                <select id="admin-password-target">
+                    <option value="access">App login password</option>
+                    <option value="admin">Admin password</option>
+                </select>
+                <input type="password" id="admin-current-password" placeholder="Current admin password" autocomplete="current-password">
+                <input type="password" id="admin-new-password" placeholder="New password" autocomplete="new-password">
+                <input type="password" id="admin-confirm-password" placeholder="Confirm new password" autocomplete="new-password" onkeyup="if(event.key==='Enter') app.submitPasswordChange()">
+                <button class="primary-btn" onclick="app.submitPasswordChange()">Change Password</button>
+                <div id="admin-menu-status" class="admin-menu-status"></div>
+            </div>
+            <div style="display: flex; gap: 10px; justify-content: flex-end;">
+                <button onclick="app.closeAdminMenu()"
+                    style="background: transparent; color: #888; border: none; cursor: pointer;">Close</button>
             </div>
         </div>
     </div>
