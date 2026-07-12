@@ -64,7 +64,7 @@ LAN exposure is disabled by default for safety. The server only listens on `127.
 - SVG uploads are blocked.
 - Uploaded files are checked against expected file signatures for supported image/video types.
 - Uploads are stored in `data/uploads/`.
-- Uploads are limited to 4 files per post, 25 MB per file, and a 1 GB total `data/uploads/` quota.
+- Uploads are limited to 4 files per post; there is no per-file size limit or total `data/uploads/` quota.
 - Rejected post uploads are cleaned up so they do not remain in `data/uploads/`.
 - Uploads are served with `X-Content-Type-Options: nosniff`.
 - LAN exposure requires an explicit opt-in through `config.server.exposeLan`.

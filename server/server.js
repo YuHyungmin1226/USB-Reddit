@@ -154,9 +154,7 @@ const RESERVED_SUBREDDITS = new Set(['general', 'random']);
 const DATA_DIR = path.join(__dirname, '../data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const LEGACY_PUBLIC_UPLOADS_DIR = path.join(__dirname, '../public/uploads');
-const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
 const MAX_ATTACHMENTS_PER_POST = 4;
-const MAX_UPLOADS_DIRECTORY_SIZE_BYTES = 1024 * 1024 * 1024;
 const SESSION_COOKIE_NAME = 'usb_reddit_session';
 const SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 const sessions = new Map();
@@ -319,35 +317,6 @@ function getListenHost() {
 
 function isWeakAdminPassword(value) {
     return typeof value !== 'string' || value.trim().length < 8 || ['CHANGE_ME', 'admin', 'admin123', 'password', '123456'].includes(value);
-}
-
-function getDirectorySize(rootPath) {
-    if (!fs.existsSync(rootPath)) return 0;
-
-    let total = 0;
-    const pending = [rootPath];
-    while (pending.length > 0) {
-        const current = pending.pop();
-        let entries = [];
-        try {
-            entries = fs.readdirSync(current, { withFileTypes: true });
-        } catch (err) {
-            continue;
-        }
-
-        entries.forEach((entry) => {
-            const entryPath = path.join(current, entry.name);
-            if (entry.isDirectory()) {
-                pending.push(entryPath);
-                return;
-            }
-            if (!entry.isFile()) return;
-            try {
-                total += fs.statSync(entryPath).size;
-            } catch (err) {}
-        });
-    }
-    return total;
 }
 
 function uploadPathFromUrl(urlValue) {
@@ -936,7 +905,6 @@ const upload = multer({
     storage: storage,
     fileFilter: safeFileFilter,
     limits: {
-        fileSize: MAX_ATTACHMENT_SIZE_BYTES,
         files: MAX_ATTACHMENTS_PER_POST
     }
 });
@@ -968,26 +936,8 @@ function safeUploadAttachments(req, res, next) {
     });
 }
 
-function enforceProjectedUploadQuota(req, res, next) {
-    const contentType = String(req.headers['content-type'] || '').toLowerCase();
-    if (!contentType.startsWith('multipart/form-data')) {
-        return next();
-    }
-
-    const contentLength = Number.parseInt(String(req.headers['content-length'] || ''), 10);
-    if (!Number.isFinite(contentLength) || contentLength <= 0) {
-        return res.status(411).json({ error: "A valid Content-Length header is required for uploads." });
-    }
-
-    if (getDirectorySize(UPLOADS_DIR) + contentLength > MAX_UPLOADS_DIRECTORY_SIZE_BYTES) {
-        return res.status(413).json({ error: "Upload storage quota exceeded. Remove older uploads before adding more files." });
-    }
-
-    next();
-}
-
 // 4. Create post (with optional file attachments)
-app.post('/api/r/:subreddit_name', sensitiveLimiter, enforceProjectedUploadQuota, safeUploadAttachments, (req, res) => {
+app.post('/api/r/:subreddit_name', sensitiveLimiter, safeUploadAttachments, (req, res) => {
     const subName = req.params.subreddit_name;
     const fail = (status, message) => {
         const cleanupFailures = cleanupUploadedFiles(req.files);
@@ -1021,9 +971,6 @@ app.post('/api/r/:subreddit_name', sensitiveLimiter, enforceProjectedUploadQuota
         const invalidUpload = (req.files || []).find((file) => !fileHasExpectedSignature(file.path, file.mimetype));
         if (invalidUpload) {
             return fail(400, "One or more uploaded files do not match their declared file type.");
-        }
-        if ((req.files || []).length > 0 && getDirectorySize(UPLOADS_DIR) > MAX_UPLOADS_DIRECTORY_SIZE_BYTES) {
-            return fail(413, "Upload storage quota exceeded. Remove older uploads before adding more files.");
         }
 
         const attachments = (req.files || []).map(file => ({
