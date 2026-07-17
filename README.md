@@ -9,7 +9,7 @@ Portable Reddit-style community board for local or LAN use.
 - Markdown posts and comments
 - Image and video attachments
 - Markdown export to the `exports/` folder from the admin menu
-- App login, in-app password changes, simple post/subreddit passwords, and admin controls
+- Optional app login, in-app password changes, simple post/subreddit passwords, and admin controls
 
 ## Requirements
 
@@ -21,7 +21,7 @@ The repository also includes launcher scripts and bundled runtimes for portable 
 ## Setup
 
 1. Copy `config.example.json` to `config.json`.
-2. Set strong `access.password` and `admin.password` values in `config.json`.
+2. Set a strong `admin.password` value in `config.json`.
 3. If you want other devices on the LAN to connect, set `"server": { "exposeLan": true }`.
 4. Start the app with one of the options below.
 
@@ -55,10 +55,10 @@ LAN exposure is disabled by default for safety. The server only listens on `127.
 
 ## Security Notes
 
-- The app requires login before posts, comments, votes, API data, or files under `/uploads/` can be viewed.
-- `access` credentials are for entering the app; `admin` credentials also unlock admin actions.
-- Admin users can use the Admin Menu to change the app login password, change the admin password, and export posts to Markdown.
-- If `access` is omitted from `config.json`, the app falls back to the admin credentials for login.
+- The app is open by default for easier access; posts, comments, votes, API data, and files under `/uploads/` can be viewed without login.
+- Admin credentials are still required for admin actions such as the Admin Menu, Markdown export, and admin-level editing/deletion.
+- To require an app-wide login, set `access.enabled` to `true` and configure `access.username` and `access.password` in `config.json`.
+- Admin users can use the Admin Menu to change the stored app login password, change the admin password, and export posts to Markdown.
 - Subreddit names are restricted to 1-32 characters using letters, numbers, underscores, and hyphens.
 - Reserved subreddits such as `general` cannot be deleted.
 - SVG uploads are blocked.

@@ -582,12 +582,19 @@ const app = {
         }
 
         app.isAdmin = false;
-        app.authenticated = false;
         app.adminPassword = null;
         localStorage.removeItem('isAdmin');
-        app.updateAdminUI();
         app.currentPostId = null;
-        app.showAuthScreen();
+
+        if (app.accessEnabled) {
+            app.authenticated = false;
+            app.updateAdminUI();
+            app.showAuthScreen();
+            return;
+        }
+
+        app.applySession({ authenticated: true, accessEnabled: false, role: 'user' });
+        await app.loadInitialData();
     },
 
     updateAdminUI: () => {
@@ -597,7 +604,7 @@ const app = {
         const adminBadge = document.getElementById('admin-badge');
 
         adminMenuBtn.style.display = app.isAdmin ? 'inline-block' : 'none';
-        logoutBtn.style.display = app.authenticated ? 'inline-block' : 'none';
+        logoutBtn.style.display = app.isAdmin || (app.authenticated && app.accessEnabled) ? 'inline-block' : 'none';
         loginBtn.style.display = app.authenticated && !app.isAdmin ? 'inline-block' : 'none';
         adminBadge.style.display = app.isAdmin ? 'inline-block' : 'none';
     },

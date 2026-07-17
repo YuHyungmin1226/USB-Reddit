@@ -96,7 +96,7 @@ function getAccessCredentials() {
         : config.admin.password;
 
     return {
-        enabled: access.enabled !== false,
+        enabled: access.enabled === true,
         username,
         password
     };
@@ -545,11 +545,11 @@ app.post('/api/login', loginLimiter, (req, res) => {
         verifyUsername(username, accessCredentials.username) &&
         verifySecret(password, accessCredentials.password);
 
-    if (!accessCredentials.enabled || isAdmin || isAccessUser) {
+    if (isAdmin || isAccessUser) {
         const role = isAdmin ? 'admin' : 'user';
         const token = createSession(role);
         setSessionCookie(res, token);
-        return res.json({ success: true, authenticated: true, role });
+        return res.json({ success: true, authenticated: true, accessEnabled: accessCredentials.enabled, role });
     }
 
     return res.status(401).json({ success: false, error: "Invalid credentials" });
@@ -1229,7 +1229,9 @@ app.post('/api/admin/password', sensitiveLimiter, (req, res) => {
             if (!config.access || typeof config.access !== 'object') {
                 config.access = {};
             }
-            config.access.enabled = true;
+            if (typeof config.access.enabled !== 'boolean') {
+                config.access.enabled = accessCredentials.enabled;
+            }
             if (typeof config.access.username !== 'string' || !config.access.username.trim()) {
                 config.access.username = accessCredentials.username || config.admin.username;
             }
